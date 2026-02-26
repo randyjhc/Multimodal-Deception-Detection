@@ -1,0 +1,15 @@
+[project]
+name = "multimodal-deception-detection"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
+
+[dependency-groups]
+dataset = [
+    "scipy>=1.17.1",
+]
+dev = [
+    "pre-commit>=4.5.1",
+]

@@ -205,3 +205,6 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Customized
+dataset/Real-life_Deception_Detection_2016/

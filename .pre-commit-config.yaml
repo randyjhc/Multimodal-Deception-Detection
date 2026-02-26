@@ -1,0 +1,12 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.4.1
+    hooks:
+      - id: ruff               # lint + auto-fix
+        args: [--fix]
+      - id: ruff-format        # format (replaces Black)
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.9.0
+    hooks:
+      - id: mypy               # type checking
