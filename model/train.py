@@ -3,7 +3,14 @@ import torch
 import torch.nn as nn
 import BiLSTM
 import torch.optim as optim
-import matplotlib as plt
+import matplotlib.pyplot as plt
+from sklearn.metrics import confusion_matrix
+from sklearn.metrics import (
+    confusion_matrix,
+    f1_score,
+    roc_curve,
+    auc,
+)
 
 def collate_fn(batch):
     """
@@ -77,17 +84,17 @@ def eval_one_epoch(model, loader, criterion, device="cuda"):
     )
 
 def run(
-    train_loader,
-    val_loader,
-    d_in,
-    device="cuda",
-    epochs=20,
-    lr=1e-3,
-    hidden=128,
-    num_layers=1,
-    dropout=0.2,
-    save_path="best_bilstm.pt"
-):
+        train_loader,
+        val_loader,
+        d_in,
+        device="cuda",
+        epochs=20,
+        lr=1e-3,
+        hidden=128,
+        num_layers=1,
+        dropout=0.2,
+        save_path="best_bilstm.pt"
+    ):
 
     device = torch.device(device if torch.cuda.is_available() else "cpu")
 
@@ -193,3 +200,70 @@ def run(
     plt.show()
 
     return model
+
+
+@torch.no_grad()
+def test(model, loader, criterion, device="cuda"):
+
+    model.eval()
+
+    all_preds = []
+    all_probs = []
+    all_labels = []
+
+    total_loss = 0
+    total = 0
+
+    for x, lengths, y in loader:
+
+        x, lengths, y = x.to(device), lengths.to(device), y.to(device)
+
+        logits = model(x, lengths)
+
+        loss = criterion(logits, y)
+        total_loss += loss.item() * x.size(0)
+
+        probs = torch.sigmoid(logits)
+        preds = (probs >= 0.5).float()
+
+        all_probs.extend(probs.cpu().numpy())
+        all_preds.extend(preds.cpu().numpy())
+        all_labels.extend(y.cpu().numpy())
+
+        total += x.size(0)
+
+    avg_loss = total_loss / total
+
+    # ===== F1 score =====
+    f1 = f1_score(all_labels, all_preds)
+
+    # ===== Confusion Matrix =====
+    cm = confusion_matrix(all_labels, all_preds)
+
+    print("Confusion Matrix")
+    print(cm)
+
+    # ===== ROC Curve =====
+    fpr, tpr, _ = roc_curve(all_labels, all_probs)
+    roc_auc = auc(fpr, tpr)
+
+    plt.figure()
+    plt.plot(fpr, tpr, label=f"ROC curve (AUC = {roc_auc:.3f})")
+    plt.plot([0, 1], [0, 1], linestyle="--")
+    plt.xlabel("False Positive Rate")
+    plt.ylabel("True Positive Rate")
+    plt.title("ROC Curve")
+    plt.legend()
+    plt.grid()
+    plt.show()
+
+    print(f"Test Loss: {avg_loss:.4f}")
+    print(f"F1 Score: {f1:.4f}")
+
+    return {
+        "loss": avg_loss,
+        "f1": f1,
+        "confusion_matrix": cm,
+        "auc": roc_auc
+    }
+    
