@@ -4,27 +4,28 @@ import torch.nn as nn
 import BiLSTM
 import torch.optim as optim
 import matplotlib.pyplot as plt
-from sklearn.metrics import confusion_matrix
 from sklearn.metrics import (
+    accuracy_score,
     confusion_matrix,
     f1_score,
     roc_curve,
     auc,
 )
+from collections import defaultdict
+import numpy as np
+from torch.utils.data import Dataset
+import torch
+import pandas as pd
 
 def collate_fn(batch):
-    """
-    batch: list of (seq(T_i, D), y)
-    returns:
-      x_padded: (B, T_max, D)
-      lengths: (B,)
-      y: (B,)
-    """
-    seqs, ys = zip(*batch)
+    '''
+    batch: list of (seq(T_i, D), y, vid)
+    '''
+    seqs, ys, vids_key = zip(*batch)  # Need 
     lengths = torch.tensor([s.shape[0] for s in seqs], dtype=torch.long)
     x_padded = pad_sequence(seqs, batch_first=True)  # pad with 0
     y = torch.tensor(ys, dtype=torch.float32)  # 0/1
-    return x_padded, lengths, y
+    return x_padded, lengths, y, vids_key  # vids_key: tuple of video_id
 
 
 def train_one_epoch(model, loader, optimizer, criterion, device="cuda"):
@@ -184,6 +185,10 @@ def run(
 
     plt.show()
 
+    ''' 
+    """
+    Not meaningful to measure accuracy for window level
+    """
     # ===== Plot Accuracy =====
     plt.figure()
 
@@ -198,12 +203,16 @@ def run(
     plt.grid()
 
     plt.show()
+    '''
 
     return model
 
 
 @torch.no_grad()
 def test(model, loader, criterion, device="cuda"):
+    '''
+    Works if the dataset is the whole video sequence
+    '''
 
     model.eval()
 
@@ -267,3 +276,101 @@ def test(model, loader, criterion, device="cuda"):
         "auc": roc_auc
     }
     
+@torch.no_grad()
+def evaluate_video_level(model, loader, criterion, device="cuda",
+                         agg="mean", topk=0.2, threshold=0.5, plot_roc=True):
+    '''
+    Video-level-evaluation
+    '''
+
+    model.eval()
+
+    # Initialize 2 dictionaries for video-level evaluation 
+    vid2probs = defaultdict(list) # Dictionary of video to list of probabilities
+    vid2label = {} # Dictionary of video to label
+
+    total_loss = 0.0
+    total_windows = 0
+
+    for x, lengths, y, vids in loader:
+        x, lengths, y = x.to(device), lengths.to(device), y.to(device)
+
+        logits = model(x, lengths)          # (B,)
+        loss = criterion(logits, y)
+
+        probs = torch.sigmoid(logits).detach().cpu().numpy()  # (B,)
+        y_np  = y.detach().cpu().numpy()                      # (B,)
+
+        total_loss += loss.item() * x.size(0)
+        total_windows += x.size(0)
+
+        # Process and classify each test data probability to the corresponding video
+        for p, lab, vid in zip(probs, y_np, vids):
+            vid2probs[vid].append(float(p))
+            
+            if vid not in vid2label:
+                vid2label[vid] = int(lab)
+            else:
+                assert vid2label[vid] == int(lab)  # Check video's label consistency
+                pass
+
+    avg_window_loss = total_loss / max(1, total_windows)
+
+    # ===== Aggregation：window -> video probability =====
+    y_true = []
+    y_prob = []
+
+    for vid, probs_list in vid2probs.items():
+        probs_arr = np.array(probs_list, dtype=np.float32)
+
+        if agg == "mean":
+            p_vid = float(probs_arr.mean())
+        elif agg == "max":
+            p_vid = float(probs_arr.max())
+        elif agg == "topk":  # Highly suggested
+            k = max(1, int(len(probs_arr) * topk))
+            top = np.sort(probs_arr)[-k:]  # Sort and get last [-k:] part
+            p_vid = float(top.mean())
+        else:
+            raise ValueError(f"Unknown agg={agg}. Use mean/max/topk.")
+
+        y_true.append(vid2label[vid])
+        y_prob.append(p_vid)
+
+    y_true = np.array(y_true, dtype=int)
+    y_prob = np.array(y_prob, dtype=np.float32)
+    y_pred = (y_prob >= threshold).astype(int)
+
+    # ===== metrics (video-level) =====
+    acc = accuracy_score(y_true, y_pred)
+    f1  = f1_score(y_true, y_pred)
+    cm  = confusion_matrix(y_true, y_pred)
+
+    # ROC/AUC
+    fpr, tpr, _ = roc_curve(y_true, y_prob)
+    roc_auc = auc(fpr, tpr)
+
+    print(f"[Video-level] agg={agg} | videos={len(y_true)} | window_loss={avg_window_loss:.4f}")
+    print(f"Accuracy: {acc:.4f} | F1: {f1:.4f} | AUC: {roc_auc:.4f}")
+    print("Confusion Matrix:\n", cm)
+
+    if plot_roc:
+        plt.figure()
+        plt.plot(fpr, tpr, label=f"ROC (AUC={roc_auc:.3f})")
+        plt.plot([0, 1], [0, 1], linestyle="--")
+        plt.xlabel("False Positive Rate")
+        plt.ylabel("True Positive Rate")
+        plt.title("Video-level ROC Curve")
+        plt.legend()
+        plt.grid()
+        plt.show()
+
+    return {
+        "window_loss": avg_window_loss,
+        "video_acc": acc,
+        "video_f1": f1,
+        "video_cm": cm,
+        "video_auc": roc_auc,
+        "y_true": y_true,
+        "y_prob": y_prob,
+    }
