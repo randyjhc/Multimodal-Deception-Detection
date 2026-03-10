@@ -1,9 +1,9 @@
 from torch.nn.utils.rnn import pad_sequence
 import torch
 import torch.nn as nn
-import BiLSTM
+from model import BiLSTM
 import torch.optim as optim
-import matplotlib as plt
+import matplotlib.pyplot as plt
 
 def collate_fn(batch):
     """
@@ -86,7 +86,9 @@ def run(
     hidden=128,
     num_layers=1,
     dropout=0.2,
-    save_path="best_bilstm.pt"
+    save_path="best_bilstm.pt",
+    patience=5,
+    verbose=True,
 ):
 
     device = torch.device(device if torch.cuda.is_available() else "cpu")
@@ -104,16 +106,19 @@ def run(
     criterion = nn.BCEWithLogitsLoss()
 
     # optimizer
-    optimizer = optim.Adam(model.parameters(), lr=lr)
+    optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
 
     best_val_acc = 0.0
+    best_val_loss = float("inf")
+    epochs_no_improve = 0
 
     list_train_loss = []
     list_train_acc = []
     list_val_loss = []
     list_val_acc = []
 
-    print("Start training...\n")
+    if verbose:
+        print("Start training...\n")
 
     for epoch in range(epochs):
 
@@ -139,13 +144,14 @@ def run(
         list_val_loss.append(val_loss)
         list_val_acc.append(val_acc)
 
-        print(
-            f"Epoch {epoch+1}/{epochs}"
-            f" | Train Loss {train_loss:.4f}"
-            f" | Train Acc {train_acc:.4f}"
-            f" | Val Loss {val_loss:.4f}"
-            f" | Val Acc {val_acc:.4f}"
-        )
+        if verbose:
+            print(
+                f"Epoch {epoch+1}/{epochs}"
+                f" | Train Loss {train_loss:.4f}"
+                f" | Train Acc {train_acc:.4f}"
+                f" | Val Loss {val_loss:.4f}"
+                f" | Val Acc {val_acc:.4f}"
+            )
 
         # save best model
         if val_acc > best_val_acc:
@@ -158,9 +164,25 @@ def run(
                 },
                 save_path
             )
-            print("Saved best model.\n")
+            if verbose:
+                print("Saved best model.\n")
 
-    print(f"\nTraining finished. Best Val Acc = {best_val_acc:.4f}")
+        # early stopping on val loss
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            epochs_no_improve = 0
+        else:
+            epochs_no_improve += 1
+            if epochs_no_improve >= patience:
+                if verbose:
+                    print(f"Early stopping triggered at epoch {epoch+1} (no val loss improvement for {patience} epochs).\n")
+                break
+
+    if verbose:
+        print(f"\nTraining finished. Best Val Acc = {best_val_acc:.4f}")
+
+    if not verbose:
+        return model
 
     # ===== Plot Loss =====
     plt.figure()
@@ -175,7 +197,8 @@ def run(
     plt.legend()
     plt.grid()
 
-    plt.show()
+    plt.savefig("loss_curve.png", dpi=150, bbox_inches="tight")
+    plt.close()
 
     # ===== Plot Accuracy =====
     plt.figure()
@@ -190,6 +213,7 @@ def run(
     plt.legend()
     plt.grid()
 
-    plt.show()
+    plt.savefig("accuracy_curve.png", dpi=150, bbox_inches="tight")
+    plt.close()
 
     return model
