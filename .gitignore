@@ -208,3 +208,5 @@ __marimo__/
 
 # Customized
 dataset/Real-life_Deception_Detection_2016/
+open_face/OpenFace_features/OpenFace_features/
+open_face/plots/
