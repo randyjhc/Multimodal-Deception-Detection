@@ -1,18 +1,34 @@
 #!/usr/bin/env python3
-"""Create symbolic links organizing UR_LYING dataset by Deceptive/Truthful.
+"""Organize UR_LYING dataset and create train/test splits.
 
-Mirrors the Real-life_Deception_Detection_2016 structure:
+Step 1 – main():
+  Builds organized/ by symlinking processed videos and transcripts, labelled by
+  their matching raw W-file (W-B → Deceptive, W-T → Truthful):
+
     organized/
     ├── Clips/
-    │   ├── Deceptive/   → symlinks to processed merged videos (W-B)
-    │   └── Truthful/    → symlinks to processed merged videos (W-T)
+    │   ├── Deceptive/   → symlinks to processed merged videos
+    │   └── Truthful/
     └── Transcription/
-        ├── Deceptive/   → symlinks to commanded_low_stakes transcripts (W-B)
-        └── Truthful/    → symlinks to commanded_low_stakes transcripts (W-T)
+        ├── Deceptive/   → symlinks to commanded_low_stakes transcripts
+        └── Truthful/
 
-Classification is determined by matching each processed video to its raw W-file:
-    - W-B (Bluff) → Deceptive
-    - W-T (Truth) → Truthful
+Step 2 – split_openface_and_symlinks():
+  Performs a 90/10 trial-level train/test split (seed=42) across all three
+  conditions (commanded_low_stakes, commanded_med_stakes, voluntary_med_stakes),
+  then writes per-trial OpenFace CSVs and symlinks under splits/:
+
+    splits/
+    ├── Train/
+    │   ├── Deceptive/
+    │   │   ├── <trial>.csv   ← W-only OpenFace feature rows
+    │   │   ├── Clips/        → symlinks into organized/Clips/
+    │   │   └── Transcription/ → symlinks into organized/Transcription/
+    │   └── Truthful/  (same layout)
+    └── Test/  (same layout)
+
+Classification: W-B (Bluff) → Deceptive, W-T (Truth) → Truthful.
+Interrogator (I-file) rows are excluded from the OpenFace CSVs.
 """
 
 import re
