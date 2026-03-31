@@ -2,6 +2,7 @@ from torch.nn.utils.rnn import pad_sequence
 import torch
 import torch.nn as nn
 from model import BiLSTM
+from model import BiGRU
 import torch.optim as optim
 import matplotlib.pyplot as plt
 from tqdm import tqdm
@@ -100,13 +101,21 @@ def run(
     else:
         device = torch.device("cpu")
 
-    # model
-    model = BiLSTM.BiLSTMClassifier(
+    # Using BiLSTM
+    # model = BiLSTM.BiLSTMClassifier(
+    #     d_in=d_in,
+    #     hidden=hidden,
+    #     num_layers=num_layers,
+    #     dropout=dropout,
+    #     pooling="mean"
+    # ).to(device)
+
+    model = BiGRU.BiGRUClassifier(
         d_in=d_in,
         hidden=hidden,
         num_layers=num_layers,
         dropout=dropout,
-        pooling="mean"
+        pooling="attention"
     ).to(device)
 
     # loss
