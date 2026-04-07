@@ -91,7 +91,12 @@ def run(
     verbose=True,
 ):
 
-    device = torch.device(device if torch.cuda.is_available() else "cpu")
+    if torch.cuda.is_available():
+        device = torch.device(device)
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
 
     # model
     model = BiLSTM.BiLSTMClassifier(

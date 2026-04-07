@@ -81,6 +81,12 @@ class OpenFaceDataset(Dataset):
         df = filtered if len(filtered) > 0 else df
 
         seq = torch.tensor(df[self.feature_cols].values, dtype=torch.float32)
+        
+        # per-sample normalization
+        mean = seq.mean(dim=0, keepdim=True)
+        std = seq.std(dim=0, keepdim=True).clamp_min(1e-6)
+        seq = (seq - mean) / std
+
         return seq, label
 
 
@@ -142,7 +148,8 @@ def make_loaders(
         num_workers=num_workers,
         pin_memory=True,
     )
-    train_loader = DataLoader(train_ds, shuffle=True, **loader_kwargs)
+    train_generator = torch.Generator().manual_seed(seed)
+    train_loader = DataLoader(train_ds, shuffle=True, generator=train_generator, **loader_kwargs)
     val_loader = DataLoader(val_ds, shuffle=False, **loader_kwargs)
     test_loader = DataLoader(test_ds, shuffle=False, **loader_kwargs)
 
