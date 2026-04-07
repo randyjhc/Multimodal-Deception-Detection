@@ -56,9 +56,11 @@ class OpenFaceDataset(Dataset):
         split: str = "Train",
         feature_cols: Optional[List[str]] = None,
         min_confidence: float = 0.5,
+        subsample_k: int = 1,
     ) -> None:
         self.feature_cols = feature_cols or DEFAULT_FEATURE_COLS
         self.min_confidence = min_confidence
+        self.subsample_k = subsample_k
 
         split_dir = Path(root_dir) / split
         self.samples: List[Tuple[Path, int]] = []
@@ -87,6 +89,8 @@ class OpenFaceDataset(Dataset):
         std = seq.std(dim=0, keepdim=True).clamp_min(1e-6)
         seq = (seq - mean) / std
 
+        if self.subsample_k > 1:
+            seq = seq[:: self.subsample_k]
         return seq, label
 
 
@@ -114,6 +118,7 @@ def make_loaders(
     seed: int = 42,
     feature_cols: Optional[List[str]] = None,
     min_confidence: float = 0.5,
+    subsample_k: int = 1,
 ) -> Tuple[DataLoader, DataLoader, DataLoader, int]:
     """Build train, val, and test DataLoaders from the OpenFace feature directory.
 
@@ -134,13 +139,13 @@ def make_loaders(
     """
     feature_cols = feature_cols or DEFAULT_FEATURE_COLS
 
-    full_train = OpenFaceDataset(root_dir, "Train", feature_cols, min_confidence)
+    full_train = OpenFaceDataset(root_dir, "Train", feature_cols, min_confidence, subsample_k)
     n_val = max(1, int(len(full_train) * val_frac))
     n_train = len(full_train) - n_val
     generator = torch.Generator().manual_seed(seed)
     train_ds, val_ds = random_split(full_train, [n_train, n_val], generator=generator)
 
-    test_ds = OpenFaceDataset(root_dir, "Test", feature_cols, min_confidence)
+    test_ds = OpenFaceDataset(root_dir, "Test", feature_cols, min_confidence, subsample_k)
 
     loader_kwargs = dict(
         batch_size=batch_size,

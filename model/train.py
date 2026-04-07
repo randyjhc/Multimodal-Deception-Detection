@@ -4,6 +4,7 @@ import torch.nn as nn
 from model import BiLSTM
 import torch.optim as optim
 import matplotlib.pyplot as plt
+from tqdm import tqdm
 
 def collate_fn(batch):
     """
@@ -26,7 +27,7 @@ def train_one_epoch(model, loader, optimizer, criterion, device="cuda"):
 
     total_loss, total_correct, total = 0.0, 0, 0
 
-    for x, lengths, y in loader:
+    for x, lengths, y in tqdm(loader, desc="Train"):
         x, lengths, y = x.to(device), lengths.to(device), y.to(device)
 
         logits = model(x, lengths)  # (B,)
@@ -57,7 +58,7 @@ def eval_one_epoch(model, loader, criterion, device="cuda"):
 
     total_loss, total_correct, total = 0.0, 0, 0
 
-    for x, lengths, y in loader:
+    for x, lengths, y in tqdm(loader, desc="Val"):
         x, lengths, y = x.to(device), lengths.to(device), y.to(device)
 
         logits = model(x, lengths)
@@ -89,6 +90,7 @@ def run(
     save_path="best_bilstm.pt",
     patience=5,
     verbose=True,
+    scheduler: str | None = None,
 ):
 
     if torch.cuda.is_available():
@@ -111,7 +113,12 @@ def run(
     criterion = nn.BCEWithLogitsLoss()
 
     # optimizer
-    optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
+    optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
+
+    # lr scheduler
+    lr_scheduler = None
+    if scheduler == "cosine":
+        lr_scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 
     best_val_acc = 0.0
     best_val_loss = float("inf")
@@ -149,9 +156,14 @@ def run(
         list_val_loss.append(val_loss)
         list_val_acc.append(val_acc)
 
+        current_lr = optimizer.param_groups[0]["lr"]
+        if lr_scheduler is not None:
+            lr_scheduler.step()
+
         if verbose:
             print(
                 f"Epoch {epoch+1}/{epochs}"
+                f" | LR {current_lr:.2e}"
                 f" | Train Loss {train_loss:.4f}"
                 f" | Train Acc {train_acc:.4f}"
                 f" | Val Loss {val_loss:.4f}"

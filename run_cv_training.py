@@ -25,25 +25,25 @@ from model.train import run, train_one_epoch
 from model.BiLSTM import BiLSTMClassifier
 
 # ── Config ────────────────────────────────────────────────────────────────────
-ROOT       = "OpenFace_features"
-K          = 5
-BATCH_SIZE = 16
-EPOCHS     = 30
-PATIENCE   = 5
-DEVICE     = "mps"
-D_IN       = len(DEFAULT_FEATURE_COLS)  # 48
+ROOT       = "dataset/UR_LYING_Deception_Dataset/splits"
+K           = 5
+BATCH_SIZE  = 16
+EPOCHS      = 20
+PATIENCE    = 10
+DEVICE      = "cuda"
+SUBSAMPLE_K = 5
+SCHEDULER   = "cosine"
+D_IN        = len(DEFAULT_FEATURE_COLS)  # 48
 
 # Hyperparameter grid  (2 × 3 × 2 = 12 combos)
 PARAM_GRID = [
-    {"hidden": h, "dropout": d, "lr": lr}
-    for h  in [64, 128]
-    for d  in [0.3, 0.4, 0.5]
-    for lr in [1e-3, 5e-4]
+    {"hidden": 64, "dropout": 0.4, "lr": lr}
+    for lr in [4e-4, 6e-4, 8e-4, 1e-3, 2e-3, 3e-3]
 ]
 
 # ── Datasets ──────────────────────────────────────────────────────────────────
-full_train_ds = OpenFaceDataset(ROOT, split="Train")
-test_ds       = OpenFaceDataset(ROOT, split="Test")
+full_train_ds = OpenFaceDataset(ROOT, split="Train", subsample_k=SUBSAMPLE_K)
+test_ds       = OpenFaceDataset(ROOT, split="Test",  subsample_k=SUBSAMPLE_K)
 labels        = [lbl for _, lbl in full_train_ds.samples]
 
 print(f"Train: {len(full_train_ds)}  |  Test: {len(test_ds)}  |  d_in: {D_IN}")
@@ -82,7 +82,8 @@ for i, params in enumerate(PARAM_GRID):
             dropout=params["dropout"],
             patience=PATIENCE,
             save_path=tmp_path,
-            verbose=False,
+            verbose=True,
+            scheduler=SCHEDULER,
         )
 
         ckpt = torch.load(tmp_path, weights_only=True)
@@ -125,16 +126,20 @@ final_model = BiLSTMClassifier(
 criterion = nn.BCEWithLogitsLoss()
 optimizer = optim.Adam(final_model.parameters(), lr=best["lr"], weight_decay=1e-4)
 
+# Train for avg_best_epoch + 1 epochs (epoch index is 0-based in checkpoint)
+final_epochs = best["avg_best_epoch"] + 1
+lr_scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=final_epochs)
+
 full_train_loader = DataLoader(
     full_train_ds,
     batch_size=BATCH_SIZE, shuffle=True, collate_fn=_collate, pin_memory=False,
 )
 
-# Train for avg_best_epoch + 1 epochs (epoch index is 0-based in checkpoint)
-final_epochs = best["avg_best_epoch"] + 1
 for epoch in range(final_epochs):
     loss, acc = train_one_epoch(final_model, full_train_loader, optimizer, criterion, device)
-    print(f"Epoch {epoch+1}/{final_epochs}  |  Train Loss {loss:.4f}  |  Train Acc {acc:.4f}")
+    current_lr = optimizer.param_groups[0]["lr"]
+    lr_scheduler.step()
+    print(f"Epoch {epoch+1}/{final_epochs}  |  LR {current_lr:.2e}  |  Train Loss {loss:.4f}  |  Train Acc {acc:.4f}")
 
 torch.save({"model_state_dict": final_model.state_dict(), "params": best}, "best_bilstm_final.pt")
 print("Saved → best_bilstm_final.pt\n")
