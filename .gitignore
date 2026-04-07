@@ -211,3 +211,5 @@ dataset/Real-life_Deception_Detection_2016/
 dataset/UR_LYING_Deception_Dataset/
 open_face/OpenFace_features/OpenFace_features/
 open_face/plots/
+*.pt
+*.png
