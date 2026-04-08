@@ -12,20 +12,43 @@ from torch.utils.data import DataLoader, Dataset, random_split
 # ---------------------------------------------------------------------------
 
 GAZE_COLS: List[str] = [
-    "gaze_0_x", "gaze_0_y", "gaze_0_z",
-    "gaze_1_x", "gaze_1_y", "gaze_1_z",
-    "gaze_angle_x", "gaze_angle_y",
+    "gaze_0_x",
+    "gaze_0_y",
+    "gaze_0_z",
+    "gaze_1_x",
+    "gaze_1_y",
+    "gaze_1_z",
+    "gaze_angle_x",
+    "gaze_angle_y",
 ]
 
 POSE_COLS: List[str] = [
-    "pose_Tx", "pose_Ty", "pose_Tz",
-    "pose_Rx", "pose_Ry", "pose_Rz",
+    "pose_Tx",
+    "pose_Ty",
+    "pose_Tz",
+    "pose_Rx",
+    "pose_Ry",
+    "pose_Rz",
 ]
 
 AU_R_COLS: List[str] = [
-    "AU01_r", "AU02_r", "AU04_r", "AU05_r", "AU06_r", "AU07_r",
-    "AU09_r", "AU10_r", "AU12_r", "AU14_r", "AU15_r", "AU17_r",
-    "AU20_r", "AU23_r", "AU25_r", "AU26_r", "AU45_r",
+    "AU01_r",
+    "AU02_r",
+    "AU04_r",
+    "AU05_r",
+    "AU06_r",
+    "AU07_r",
+    "AU09_r",
+    "AU10_r",
+    "AU12_r",
+    "AU14_r",
+    "AU15_r",
+    "AU17_r",
+    "AU20_r",
+    "AU23_r",
+    "AU25_r",
+    "AU26_r",
+    "AU45_r",
 ]
 
 AU_C_COLS: List[str] = [col.replace("_r", "_c") for col in AU_R_COLS]
@@ -96,7 +119,7 @@ class OpenFaceDataset(Dataset):
 
         if self.motion_method == "feature_diff":
             feats = df[self.feature_cols].values.astype(np.float32)  # (T, 48)
-            diff = np.abs(np.diff(feats, axis=0)).mean(axis=1)       # (T-1,)
+            diff = np.abs(np.diff(feats, axis=0)).mean(axis=1)  # (T-1,)
             scores[1:] = diff
 
         return (scores >= self.motion_low) & (scores <= self.motion_high)
@@ -119,7 +142,7 @@ class OpenFaceDataset(Dataset):
             df = motion_filtered if len(motion_filtered) > 0 else df
 
         seq = torch.tensor(df[self.feature_cols].values, dtype=torch.float32)
-        
+
         # per-sample normalization
         mean = seq.mean(dim=0, keepdim=True)
         std = seq.std(dim=0, keepdim=True).clamp_min(1e-6)
@@ -128,7 +151,6 @@ class OpenFaceDataset(Dataset):
         if self.subsample_k > 1:
             seq = seq[:: self.subsample_k]
         return seq, label
-
 
 
 def _collate(batch: list) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -185,8 +207,14 @@ def make_loaders(
     feature_cols = feature_cols or DEFAULT_FEATURE_COLS
 
     full_train = OpenFaceDataset(
-        root_dir, "Train", feature_cols, min_confidence, subsample_k,
-        motion_method=motion_method, motion_low=motion_low, motion_high=motion_high,
+        root_dir,
+        "Train",
+        feature_cols,
+        min_confidence,
+        subsample_k,
+        motion_method=motion_method,
+        motion_low=motion_low,
+        motion_high=motion_high,
     )
     n_val = max(1, int(len(full_train) * val_frac))
     n_train = len(full_train) - n_val
@@ -194,8 +222,14 @@ def make_loaders(
     train_ds, val_ds = random_split(full_train, [n_train, n_val], generator=generator)
 
     test_ds = OpenFaceDataset(
-        root_dir, "Test", feature_cols, min_confidence, subsample_k,
-        motion_method=motion_method, motion_low=motion_low, motion_high=motion_high,
+        root_dir,
+        "Test",
+        feature_cols,
+        min_confidence,
+        subsample_k,
+        motion_method=motion_method,
+        motion_low=motion_low,
+        motion_high=motion_high,
     )
 
     loader_kwargs = dict(
@@ -205,7 +239,9 @@ def make_loaders(
         pin_memory=True,
     )
     train_generator = torch.Generator().manual_seed(seed)
-    train_loader = DataLoader(train_ds, shuffle=True, generator=train_generator, **loader_kwargs)
+    train_loader = DataLoader(
+        train_ds, shuffle=True, generator=train_generator, **loader_kwargs
+    )
     val_loader = DataLoader(val_ds, shuffle=False, **loader_kwargs)
     test_loader = DataLoader(test_ds, shuffle=False, **loader_kwargs)
 

@@ -6,6 +6,7 @@ Usage:
     python -m dataset.seq_length_stats --k 5
     python -m dataset.seq_length_stats --k 5 --motion_method feature_diff --motion_low 0.01 --motion_high 2.0
 """
+
 import argparse
 from typing import List, Literal, Optional
 
@@ -27,8 +28,14 @@ def compute_sequence_length_stats(
 ) -> dict:
     """Compute sequence length statistics (mean, min, max) for a dataset split."""
     ds = OpenFaceDataset(
-        root_dir, split, feature_cols, min_confidence, subsample_k,
-        motion_method=motion_method, motion_low=motion_low, motion_high=motion_high,
+        root_dir,
+        split,
+        feature_cols,
+        min_confidence,
+        subsample_k,
+        motion_method=motion_method,
+        motion_low=motion_low,
+        motion_high=motion_high,
     )
     lengths = [ds[i][0].shape[0] for i in range(len(ds))]
     mean_len = sum(lengths) / len(lengths)
@@ -36,30 +43,43 @@ def compute_sequence_length_stats(
     max_len = max(lengths)
     motion_info = (
         f"  motion={motion_method}[{motion_low},{motion_high}]"
-        if motion_method != "none" else ""
+        if motion_method != "none"
+        else ""
     )
-    print(f"[{split}] n={len(lengths)}  mean={mean_len:.1f}  min={min_len}  max={max_len}{motion_info}")
+    print(
+        f"[{split}] n={len(lengths)}  mean={mean_len:.1f}  min={min_len}  max={max_len}{motion_info}"
+    )
     return {"mean": mean_len, "min": min_len, "max": max_len, "lengths": lengths}
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", default=ROOT)
-    parser.add_argument("--k", type=int, default=1, help="Subsample every k-th frame (1 = no subsampling)")
-    parser.add_argument("--motion_method", default="none",
-                        choices=["none", "feature_diff"])
-    parser.add_argument("--motion_low",  type=float, default=0.0)
+    parser.add_argument(
+        "--k",
+        type=int,
+        default=1,
+        help="Subsample every k-th frame (1 = no subsampling)",
+    )
+    parser.add_argument(
+        "--motion_method", default="none", choices=["none", "feature_diff"]
+    )
+    parser.add_argument("--motion_low", type=float, default=0.0)
     parser.add_argument("--motion_high", type=float, default=float("inf"))
     args = parser.parse_args()
 
     compute_sequence_length_stats(
-        args.root, split="Train", subsample_k=args.k,
+        args.root,
+        split="Train",
+        subsample_k=args.k,
         motion_method=args.motion_method,
         motion_low=args.motion_low,
         motion_high=args.motion_high,
     )
     compute_sequence_length_stats(
-        args.root, split="Test", subsample_k=args.k,
+        args.root,
+        split="Test",
+        subsample_k=args.k,
         motion_method=args.motion_method,
         motion_low=args.motion_low,
         motion_high=args.motion_high,
