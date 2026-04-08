@@ -1,6 +1,7 @@
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Literal, Optional, Tuple
 
+import numpy as np
 import pandas as pd
 import torch
 from torch.nn.utils.rnn import pad_sequence
@@ -57,10 +58,16 @@ class OpenFaceDataset(Dataset):
         feature_cols: Optional[List[str]] = None,
         min_confidence: float = 0.5,
         subsample_k: int = 1,
+        motion_method: Literal["none", "feature_diff"] = "none",
+        motion_low: float = 0.0,
+        motion_high: float = float("inf"),
     ) -> None:
         self.feature_cols = feature_cols or DEFAULT_FEATURE_COLS
         self.min_confidence = min_confidence
         self.subsample_k = subsample_k
+        self.motion_method = motion_method
+        self.motion_low = motion_low
+        self.motion_high = motion_high
 
         split_dir = Path(root_dir) / split
         self.samples: List[Tuple[Path, int]] = []
@@ -70,6 +77,29 @@ class OpenFaceDataset(Dataset):
 
     def __len__(self) -> int:
         return len(self.samples)
+
+    def _motion_mask(self, df: pd.DataFrame) -> np.ndarray:
+        """Compute a boolean keep-mask based on per-frame ``feature_diff`` motion scores.
+
+        Scores are the mean L1 difference of the 48 model feature columns between
+        consecutive frames. Frame 0 always receives score 0.0 and passes the lower
+        bound (inclusive ``>=`` comparison).
+
+        Args:
+            df: Confidence-filtered DataFrame containing the model feature columns.
+
+        Returns:
+            Boolean ndarray of shape ``(T,)``; True = keep frame.
+        """
+        T = len(df)
+        scores = np.zeros(T, dtype=np.float32)
+
+        if self.motion_method == "feature_diff":
+            feats = df[self.feature_cols].values.astype(np.float32)  # (T, 48)
+            diff = np.abs(np.diff(feats, axis=0)).mean(axis=1)       # (T-1,)
+            scores[1:] = diff
+
+        return (scores >= self.motion_low) & (scores <= self.motion_high)
 
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, int]:
         csv_path, label = self.samples[idx]
@@ -81,6 +111,12 @@ class OpenFaceDataset(Dataset):
         # Fall back to all frames if every row would be filtered out.
         filtered = df[(df["success"] == 1) & (df["confidence"] >= self.min_confidence)]
         df = filtered if len(filtered) > 0 else df
+
+        # Optional motion-based frame filtering (after confidence filter).
+        # Fall back to post-confidence frames if the motion mask removes everything.
+        if self.motion_method != "none":
+            motion_filtered = df[self._motion_mask(df)]
+            df = motion_filtered if len(motion_filtered) > 0 else df
 
         seq = torch.tensor(df[self.feature_cols].values, dtype=torch.float32)
         
@@ -119,6 +155,9 @@ def make_loaders(
     feature_cols: Optional[List[str]] = None,
     min_confidence: float = 0.5,
     subsample_k: int = 1,
+    motion_method: Literal["none", "feature_diff"] = "none",
+    motion_low: float = 0.0,
+    motion_high: float = float("inf"),
 ) -> Tuple[DataLoader, DataLoader, DataLoader, int]:
     """Build train, val, and test DataLoaders from the OpenFace feature directory.
 
@@ -130,6 +169,12 @@ def make_loaders(
         seed:           Random seed for the train/val split.
         feature_cols:   Override the default 48-column feature set.
         min_confidence: Minimum OpenFace confidence to keep a frame.
+        motion_method:  Frame scoring method: ``"none"`` (disabled),
+                        ``"feature_diff"`` (mean L1 over 48 feature cols), or
+                        ``"landmark_diff"`` (mean Euclidean 2D landmark
+                        displacement). Default ``"none"``.
+        motion_low:     Keep frames with score >= motion_low. Default 0.0.
+        motion_high:    Keep frames with score <= motion_high. Default inf.
 
     Returns:
         train_loader, val_loader, test_loader, d_in
@@ -139,13 +184,19 @@ def make_loaders(
     """
     feature_cols = feature_cols or DEFAULT_FEATURE_COLS
 
-    full_train = OpenFaceDataset(root_dir, "Train", feature_cols, min_confidence, subsample_k)
+    full_train = OpenFaceDataset(
+        root_dir, "Train", feature_cols, min_confidence, subsample_k,
+        motion_method=motion_method, motion_low=motion_low, motion_high=motion_high,
+    )
     n_val = max(1, int(len(full_train) * val_frac))
     n_train = len(full_train) - n_val
     generator = torch.Generator().manual_seed(seed)
     train_ds, val_ds = random_split(full_train, [n_train, n_val], generator=generator)
 
-    test_ds = OpenFaceDataset(root_dir, "Test", feature_cols, min_confidence, subsample_k)
+    test_ds = OpenFaceDataset(
+        root_dir, "Test", feature_cols, min_confidence, subsample_k,
+        motion_method=motion_method, motion_low=motion_low, motion_high=motion_high,
+    )
 
     loader_kwargs = dict(
         batch_size=batch_size,

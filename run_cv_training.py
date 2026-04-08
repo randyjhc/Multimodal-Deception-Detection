@@ -25,33 +25,41 @@ from model.train import run, train_one_epoch
 from model.BiLSTM import BiLSTMClassifier
 
 # ── Config ────────────────────────────────────────────────────────────────────
-ROOT       = "dataset/UR_LYING_Deception_Dataset/splits"
-K           = 5
-BATCH_SIZE  = 16
-EPOCHS      = 20
-PATIENCE    = 10
-DEVICE      = "cuda"
-SUBSAMPLE_K = 5
-SCHEDULER   = "cosine"
-D_IN        = len(DEFAULT_FEATURE_COLS)  # 48
+ROOT          = "dataset/UR_LYING_Deception_Dataset/splits"
+K             = 5
+BATCH_SIZE    = 16
+EPOCHS        = 20
+PATIENCE      = 10
+DEVICE        = "cuda"
+SUBSAMPLE_K   = 5
+SCHEDULER     = "cosine"
+D_IN          = len(DEFAULT_FEATURE_COLS)  # 48
+# (motion_method, motion_low, motion_high)
+# feature_diff scores: mean L1 over 48 features (AU intensities 0-5, gaze/pose similar scale)
+MOTION_COMBOS = [
+    ("feature_diff", 0.2, 2.0),            # remove near-static + extreme-noise frames
+    ("feature_diff", 0.2, 0.8),            # tighter upper bound
+]
 
-# Hyperparameter grid  (2 × 3 × 2 = 12 combos)
+# Hyperparameter grid — motion combo (3 combos × 5 folds = 15 runs)
 PARAM_GRID = [
-    {"hidden": 64, "dropout": 0.4, "lr": lr}
-    for lr in [4e-4, 6e-4, 8e-4, 1e-3, 2e-3, 3e-3]
+    {"hidden": 64, "dropout": 0.4, "lr": 1e-3,
+     "motion_method": mm, "motion_low": ml, "motion_high": mh}
+    for mm, ml, mh in MOTION_COMBOS
 ]
 
 # ── Datasets ──────────────────────────────────────────────────────────────────
-full_train_ds = OpenFaceDataset(ROOT, split="Train", subsample_k=SUBSAMPLE_K)
-test_ds       = OpenFaceDataset(ROOT, split="Test",  subsample_k=SUBSAMPLE_K)
-labels        = [lbl for _, lbl in full_train_ds.samples]
+# Base dataset (no motion filtering) to extract labels and compute CV splits.
+# Indices remain consistent across all combos since file order is fixed.
+_base_ds = OpenFaceDataset(ROOT, split="Train", subsample_k=SUBSAMPLE_K)
+labels   = [lbl for _, lbl in _base_ds.samples]
 
-print(f"Train: {len(full_train_ds)}  |  Test: {len(test_ds)}  |  d_in: {D_IN}")
+print(f"Train: {len(_base_ds)}  |  d_in: {D_IN}  |  motion combos: {len(MOTION_COMBOS)}")
 print(f"Grid: {len(PARAM_GRID)} combos × {K} folds = {len(PARAM_GRID) * K} runs\n")
 
 # ── CV hyperparameter search ──────────────────────────────────────────────────
 skf    = StratifiedKFold(n_splits=K, shuffle=True, random_state=42)
-splits = list(skf.split(np.arange(len(full_train_ds)), labels))
+splits = list(skf.split(np.arange(len(_base_ds)), labels))
 
 results = []
 
@@ -59,13 +67,21 @@ for i, params in enumerate(PARAM_GRID):
     fold_accs   = []
     fold_epochs = []
 
+    # Create a fresh dataset for this combo's motion thresholds.
+    combo_ds = OpenFaceDataset(
+        ROOT, split="Train", subsample_k=SUBSAMPLE_K,
+        motion_method=params["motion_method"],
+        motion_low=params["motion_low"],
+        motion_high=params["motion_high"],
+    )
+
     for fold, (train_idx, val_idx) in enumerate(splits):
         train_loader = DataLoader(
-            Subset(full_train_ds, train_idx),
+            Subset(combo_ds, train_idx),
             batch_size=BATCH_SIZE, shuffle=True, collate_fn=_collate, pin_memory=False,
         )
         val_loader = DataLoader(
-            Subset(full_train_ds, val_idx),
+            Subset(combo_ds, val_idx),
             batch_size=BATCH_SIZE, shuffle=False, collate_fn=_collate, pin_memory=False,
         )
 
@@ -97,7 +113,8 @@ for i, params in enumerate(PARAM_GRID):
 
     print(
         f"[{i+1:2d}/{len(PARAM_GRID)}] "
-        f"hidden={params['hidden']:3d}  dropout={params['dropout']}  lr={params['lr']:.0e}"
+        f"lr={params['lr']:.0e}  method={params['motion_method']}"
+        f"  ml={params['motion_low']}  mh={params['motion_high']}"
         f"  →  mean_val_acc={mean_acc:.4f}  avg_best_epoch={avg_epoch}"
     )
 
@@ -106,12 +123,27 @@ best = max(results, key=lambda r: r["mean_val_acc"])
 
 print(f"\n{'='*55}")
 print(f"Best: hidden={best['hidden']}  dropout={best['dropout']}  lr={best['lr']:.0e}")
+print(f"      motion_method={best['motion_method']}  motion_low={best['motion_low']}  motion_high={best['motion_high']}")
 print(f"  CV mean val acc : {best['mean_val_acc']:.4f}")
 print(f"  Avg best epoch  : {best['avg_best_epoch']}")
 print(f"{'='*55}\n")
 
 # ── Final training on all 109 samples ─────────────────────────────────────────
 print("Training final model on all 109 training samples...")
+
+# Recreate datasets using the best motion thresholds found during CV.
+full_train_ds = OpenFaceDataset(
+    ROOT, split="Train", subsample_k=SUBSAMPLE_K,
+    motion_method=best["motion_method"],
+    motion_low=best["motion_low"],
+    motion_high=best["motion_high"],
+)
+test_ds = OpenFaceDataset(
+    ROOT, split="Test", subsample_k=SUBSAMPLE_K,
+    motion_method=best["motion_method"],
+    motion_low=best["motion_low"],
+    motion_high=best["motion_high"],
+)
 
 device = torch.device(DEVICE if torch.backends.mps.is_available() else "cpu")
 
