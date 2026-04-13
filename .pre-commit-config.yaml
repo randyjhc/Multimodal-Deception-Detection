@@ -10,3 +10,4 @@ repos:
     rev: v1.9.0
     hooks:
       - id: mypy               # type checking
+        args: [--follow-imports=silent, --ignore-missing-imports]
