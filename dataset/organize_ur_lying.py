@@ -1,132 +1,81 @@
 #!/usr/bin/env python3
-"""Organize UR_LYING dataset and create train/test splits.
+"""Organize UR_LYING dataset into openface/, raw_clips/, and processed_clips/ with train/test splits.
 
-Step 1 – main():
-  Builds organized/ by symlinking processed videos and transcripts, labelled by
-  their matching raw W-file (W-B → Deceptive, W-T → Truthful):
-
-    organized/
-    ├── Clips/
-    │   ├── Deceptive/   → symlinks to processed merged videos
-    │   └── Truthful/
-    └── Transcription/
-        ├── Deceptive/   → symlinks to commanded_low_stakes transcripts
-        └── Truthful/
-
-Step 2 – split_openface_and_symlinks():
-  Performs a 90/10 trial-level train/test split (seed=42) across all three
-  conditions (commanded_low_stakes, commanded_med_stakes, voluntary_med_stakes),
-  then writes per-trial OpenFace CSVs and symlinks under splits/:
+Split assignments are read from openface_bk/ (the gold source) and written to four
+text files under splits/:
 
     splits/
+      train_deceptive.txt  ← one canonical trial key per line
+      train_truthful.txt
+      test_deceptive.txt
+      test_truthful.txt
+
+organize_ur_lying.py then reads those lists to drive all output:
+
+    openface/
     ├── Train/
-    │   ├── Deceptive/
-    │   │   ├── <trial>.csv   ← W-only OpenFace feature rows
-    │   │   ├── Clips/        → symlinks into organized/Clips/
-    │   │   └── Transcription/ → symlinks into organized/Transcription/
-    │   └── Truthful/  (same layout)
+    │   ├── Deceptive/   ← per-trial OpenFace feature CSVs (W-B trials)
+    │   └── Truthful/    ← per-trial OpenFace feature CSVs (W-T trials)
+    └── Test/  (same layout)
+
+    raw_clips/
+    ├── Train/
+    │   ├── Deceptive/   → symlinks to raw W-B videos in v1.0/raw_data/
+    │   └── Truthful/    → symlinks to raw W-T videos in v1.0/raw_data/
+    └── Test/  (same layout)
+
+    processed_clips/
+    ├── Train/
+    │   ├── Deceptive/   → symlinks to merged videos in v1.0/processed_data/merged_videos/
+    │   └── Truthful/
     └── Test/  (same layout)
 
 Classification: W-B (Bluff) → Deceptive, W-T (Truth) → Truthful.
-Interrogator (I-file) rows are excluded from the OpenFace CSVs.
+Interrogator (I-file) rows/videos are excluded.
+~21 trials have no processed/merged video (raw video exists but was not merged);
+these will appear in openface/ and raw_clips/ but not in processed_clips/.
 """
 
 import re
 from collections import defaultdict
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
 BASE_DIR = Path(__file__).parent / "UR_LYING_Deception_Dataset"
 PROCESSED_DIR = BASE_DIR / "v1.0" / "processed_data" / "merged_videos"
 RAW_DIR = BASE_DIR / "v1.0" / "raw_data"
-ORGANIZED_DIR = BASE_DIR / "organized"
-SPLITS_DIR = BASE_DIR / "splits"
+OPENFACE_SRC = BASE_DIR / "v1.0" / "processed_data" / "openface_features"
+
+OPENFACE_BK_DIR = BASE_DIR / "openface_bk"
+SPLITS_LIST_DIR = BASE_DIR / "splits"
+
+OPENFACE_DIR = BASE_DIR / "openface"
+RAW_CLIPS_DIR = BASE_DIR / "raw_clips"
+PROCESSED_CLIPS_DIR = BASE_DIR / "processed_clips"
 
 CONDITIONS = ["commanded_low_stakes", "commanded_med_stakes", "voluntary_med_stakes"]
 
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
-def build_raw_index(raw_videos_dir: Path) -> dict[str, str]:
-    """Build file_id → classification mapping from raw W-files."""
-    index: dict[str, str] = {}
-    for f in raw_videos_dir.glob("*.mp4"):
-        m = re.search(r"-W-(B|T)-", f.name)
-        if m:
-            label = "Deceptive" if m.group(1) == "B" else "Truthful"
-            # file_id = everything before "-W-B-" or "-W-T-"
-            file_id = f.name[: f.name.index(f"-W-{m.group(1)}-")]
-            index[file_id] = label
-    return index
+
+def _openface_key(stem: str) -> str:
+    """Canonical trial key from an OpenFace filename stem (strips -W-B/T-... suffix)."""
+    return stem.split("-W-B-")[0].split("-W-T-")[0]
 
 
 def get_processed_file_id(stem: str, condition: str) -> str:
-    """Extract the raw data file_id from a processed video stem.
+    """Extract the canonical trial key from a processed video stem.
 
-    commanded_low_stakes uses HH-MM-SS-ms naming; the raw file_id is the
-    last 3 segments (MM-SS-ms). All other conditions use the full timestamp
-    stem as the file_id.
+    commanded_low_stakes uses HH-MM-SS-ms naming; the key is the last 3 segments
+    (MM-SS-ms). All other conditions use the full timestamp stem as the key.
     """
     if condition == "commanded_low_stakes":
         parts = stem.split("-")
         return "-".join(parts[1:])  # drop leading HH segment
     return stem
-
-
-def main() -> None:
-    for category in ("Deceptive", "Truthful"):
-        (ORGANIZED_DIR / "Clips" / category).mkdir(parents=True, exist_ok=True)
-        (ORGANIZED_DIR / "Transcription" / category).mkdir(parents=True, exist_ok=True)
-
-    stats: dict[str, int] = {"Deceptive": 0, "Truthful": 0, "unmatched": 0}
-    transcript_stats: dict[str, int] = {"Deceptive": 0, "Truthful": 0}
-
-    for condition in CONDITIONS:
-        processed_dir = PROCESSED_DIR / condition
-        raw_video_dir = RAW_DIR / condition / "videos"
-        transcript_dir = RAW_DIR / condition / "transcripts"
-
-        raw_index = build_raw_index(raw_video_dir)
-
-        for video in sorted(processed_dir.rglob("*.mp4")):
-            file_id = get_processed_file_id(video.stem, condition)
-            classification = raw_index.get(file_id)
-
-            if classification is None:
-                print(f"WARNING: No W-file match for {video.name} (file_id={file_id})")
-                stats["unmatched"] += 1
-                continue
-
-            # Symlink for video
-            clip_link = ORGANIZED_DIR / "Clips" / classification / video.name
-            if not clip_link.exists():
-                clip_link.symlink_to(video.resolve())
-            stats[classification] += 1
-
-            # Symlink for transcript (only commanded_low_stakes has transcripts)
-            if transcript_dir.exists():
-                transcript = transcript_dir / f"{file_id}.csv"
-                if transcript.exists():
-                    trans_link = (
-                        ORGANIZED_DIR / "Transcription" / classification / f"{file_id}.csv"
-                    )
-                    if not trans_link.exists():
-                        trans_link.symlink_to(transcript.resolve())
-                    transcript_stats[classification] += 1
-
-    total_clips = stats["Deceptive"] + stats["Truthful"]
-    total_trans = transcript_stats["Deceptive"] + transcript_stats["Truthful"]
-    print(
-        f"Clips:         {stats['Deceptive']} Deceptive, {stats['Truthful']} Truthful "
-        f"(total={total_clips}, unmatched={stats['unmatched']})"
-    )
-    print(
-        f"Transcription: {transcript_stats['Deceptive']} Deceptive, "
-        f"{transcript_stats['Truthful']} Truthful (total={total_trans})"
-    )
-
-
-SPLIT_SEED = 42
 
 
 def _extract_trial_id(filename: str) -> str | None:
@@ -135,76 +84,127 @@ def _extract_trial_id(filename: str) -> str | None:
     return filename[: m.start()] if m else None
 
 
-def _build_combined_trial_split(
-    csv_paths: list[tuple[Path, str]], seed: int
-) -> dict[str, dict[str, set[tuple[str, str]]]]:
-    """Pass 1: read filename column only from all 3 CSVs, return train/test sets.
+# ---------------------------------------------------------------------------
+# Step 1: dump split key lists from openface_bk
+# ---------------------------------------------------------------------------
 
-    Returns: {class: {"train": {(condition, trial_id), ...}, "test": {...}}}
-    Only W-files (witness behavior) determine the split.
+_LIST_NAMES: dict[tuple[str, str], str] = {
+    ("Train", "Deceptive"): "train_deceptive.txt",
+    ("Train", "Truthful"): "train_truthful.txt",
+    ("Test", "Deceptive"): "test_deceptive.txt",
+    ("Test", "Truthful"): "test_truthful.txt",
+}
+
+
+def dump_split_lists() -> None:
+    """Write 4 text files to splits/ with one canonical key per line, derived from openface_bk."""
+    SPLITS_LIST_DIR.mkdir(parents=True, exist_ok=True)
+    for (split_name, cls), fname in _LIST_NAMES.items():
+        src_dir = OPENFACE_BK_DIR / split_name / cls
+        if not src_dir.exists():
+            raise FileNotFoundError(f"openface_bk source dir not found: {src_dir}")
+        keys = sorted(_openface_key(p.stem) for p in src_dir.glob("*.csv"))
+        out = SPLITS_LIST_DIR / fname
+        out.write_text("\n".join(keys) + "\n")
+        print(f"  Wrote {len(keys)} keys → {out.name}")
+
+
+# ---------------------------------------------------------------------------
+# Step 2: load split from lists and build path lookups
+# ---------------------------------------------------------------------------
+
+
+def _load_split_from_lists() -> tuple[dict, dict, dict]:
+    """Read the 4 split text files and build path dicts.
+
+    Returns:
+        split      : {cls: {"train": set((condition, trial_id)), "test": {...}}}
+        proc_paths : {(condition, trial_id): Path}  — processed/merged video
+        raw_paths  : {(condition, trial_id): Path}  — raw W-file
     """
-    # Build a set of valid (condition, trial_id) pairs that have a processed video.
-    # commanded_low_stakes clip stems are HH-MM-SS-ms; trial_id is the last 3 segments.
-    valid_trials: set[tuple[str, str]] = set()
-    for cls in ("Deceptive", "Truthful"):
-        for clip in (ORGANIZED_DIR / "Clips" / cls).iterdir():
-            stem = clip.stem
-            parts = stem.split("-")
-            if len(parts) == 4 and not stem[0].isalpha():
-                # commanded_low_stakes: drop leading HH segment
-                valid_trials.add(("commanded_low_stakes", "-".join(parts[1:])))
-            else:
-                # timestamp format: full stem is the trial_id
-                for cond in ("commanded_med_stakes", "voluntary_med_stakes"):
-                    valid_trials.add((cond, stem))
+    # Build key → condition from raw W-files
+    key_to_condition: dict[str, str] = {}
+    for condition in CONDITIONS:
+        for f in (RAW_DIR / condition / "videos").glob("*.mp4"):
+            m = re.search(r"-W-(B|T)-", f.name)
+            if m:
+                trial_id = f.name[: f.name.index(f"-W-{m.group(1)}-")]
+                key_to_condition[trial_id] = condition
 
-    trial_class: dict[tuple[str, str], str] = {}
-    for csv_path, condition in csv_paths:
-        filenames = pd.read_csv(csv_path, usecols=["filename"])["filename"].unique()
-        for fname in filenames:
-            if "-W-B-" in fname:
-                cls = "Deceptive"
-            elif "-W-T-" in fname:
-                cls = "Truthful"
-            else:
+    # Build key → processed clip path
+    key_to_proc: dict[str, Path] = {}
+    for condition in CONDITIONS:
+        for video in (PROCESSED_DIR / condition).rglob("*.mp4"):
+            key = get_processed_file_id(video.stem, condition)
+            key_to_proc[key] = video
+
+    # Build key → raw W-file path
+    key_to_raw: dict[str, Path] = {}
+    for condition in CONDITIONS:
+        for f in (RAW_DIR / condition / "videos").glob("*.mp4"):
+            m = re.search(r"-W-(B|T)-", f.name)
+            if m:
+                trial_id = f.name[: f.name.index(f"-W-{m.group(1)}-")]
+                key_to_raw[trial_id] = f
+
+    # Read split lists
+    split: dict[str, dict[str, set]] = {
+        "Deceptive": {"train": set(), "test": set()},
+        "Truthful": {"train": set(), "test": set()},
+    }
+    proc_paths: dict[tuple[str, str], Path] = {}
+    raw_paths: dict[tuple[str, str], Path] = {}
+    missing_raw = 0
+    missing_proc = 0
+
+    for (split_name, cls), fname in _LIST_NAMES.items():
+        keys = (SPLITS_LIST_DIR / fname).read_text().splitlines()
+        for key in keys:
+            key = key.strip()
+            if not key:
                 continue
-            tid = _extract_trial_id(fname)
-            if tid and (condition, tid) in valid_trials:
-                trial_class[(condition, tid)] = cls
+            if key not in key_to_condition:
+                print(f"  WARNING: key {key!r} has no matching raw W-file — skipping")
+                missing_raw += 1
+                continue
+            condition = key_to_condition[key]
+            split[cls][split_name.lower()].add((condition, key))
+            if key in key_to_proc:
+                proc_paths[(condition, key)] = key_to_proc[key]
+            else:
+                missing_proc += 1
+            if key in key_to_raw:
+                raw_paths[(condition, key)] = key_to_raw[key]
 
-    rng = np.random.default_rng(seed)
-    split: dict[str, dict[str, set]] = {}
-    for cls in ("Deceptive", "Truthful"):
-        trials = np.array([(c, t) for (c, t), lbl in trial_class.items() if lbl == cls])
-        rng.shuffle(trials)
-        n_train = max(1, int(len(trials) * 0.9))
-        split[cls] = {
-            "train": {tuple(r) for r in trials[:n_train]},
-            "test": {tuple(r) for r in trials[n_train:]},
-        }
-    return split
+    if missing_proc:
+        print(
+            f"  Note: {missing_proc} trials have no processed/merged video (expected ~21)"
+        )
+
+    return split, proc_paths, raw_paths
 
 
-def _write_combined_csvs(
-    csv_paths: list[tuple[Path, str]],
-    split: dict,
-    organized_dir: Path,
-) -> None:
-    """Pass 2: stream all condition CSVs, write one CSV per trial per folder.
+# ---------------------------------------------------------------------------
+# Write OpenFace CSVs
+# ---------------------------------------------------------------------------
 
-    Output: organized_dir/{Train|Test}/{Deceptive|Truthful}/<trial>.csv
-    W-only rows (Interrogator rows are excluded). The filename column is
-    dropped so OpenFaceDataset can select feature columns directly.
-    """
+
+def _write_openface_csvs(split: dict) -> None:
+    """Write per-trial OpenFace CSVs to openface/{Train|Test}/{Deceptive|Truthful}/."""
     lookup: dict[tuple[str, str], tuple[str, str]] = {}
     for cls in ("Deceptive", "Truthful"):
         for split_name in ("train", "test"):
             for cond, tid in split[cls][split_name]:
                 lookup[(cond, tid)] = (split_name.capitalize(), cls)
 
-    # Accumulate per-trial frames: {(split_name, cls, out_filename): [frames]}
-    trial_buffers: dict[tuple[str, str, str], list[pd.DataFrame]] = {}
+    csv_paths: list[tuple[Path, str]] = []
+    for condition in CONDITIONS:
+        p = OPENFACE_SRC / f"{condition}_openface.csv.bz2"
+        if not p.exists():
+            p = OPENFACE_SRC / f"{condition}_openface.csv"
+        csv_paths.append((p, condition))
 
+    trial_buffers: dict[tuple[str, str, str], list[pd.DataFrame]] = {}
     for csv_path, condition in csv_paths:
         print(f"  Streaming {condition}...")
         for chunk in pd.read_csv(csv_path, chunksize=50_000):
@@ -226,60 +226,95 @@ def _write_combined_csvs(
 
     counts: defaultdict[tuple[str, str], int] = defaultdict(int)
     for (split_name, cls, out_name), frames in trial_buffers.items():
-        out_path = organized_dir / split_name / cls / out_name
+        out_path = OPENFACE_DIR / split_name / cls / out_name
         pd.concat(frames, ignore_index=True).to_csv(out_path, index=False)
         counts[(split_name, cls)] += 1
 
     for (split_name, cls), n in sorted(counts.items()):
-        print(f"  Wrote {n} trial CSVs to {split_name}/{cls}/")
+        print(f"  Wrote {n} trial CSVs to openface/{split_name}/{cls}/")
 
 
-def split_openface_and_symlinks() -> None:
-    """Split OpenFace data into 4 combined CSVs; create Train/Test symlink trees."""
-    openface_src = BASE_DIR / "v1.0" / "processed_data" / "openface_features"
+# ---------------------------------------------------------------------------
+# Create clip symlinks
+# ---------------------------------------------------------------------------
 
-    csv_paths: list[tuple[Path, str]] = []
-    for condition in CONDITIONS:
-        p = openface_src / f"{condition}_openface.csv.bz2"
-        if not p.exists():
-            p = openface_src / f"{condition}_openface.csv"
-        csv_paths.append((p, condition))
 
-    for split_name in ("Train", "Test"):
-        for category in ("Deceptive", "Truthful"):
-            (SPLITS_DIR / split_name / category).mkdir(parents=True, exist_ok=True)
-            (SPLITS_DIR / split_name / category / "Clips").mkdir(exist_ok=True)
-            (SPLITS_DIR / split_name / category / "Transcription").mkdir(exist_ok=True)
+def _create_clip_symlinks(
+    split: dict,
+    proc_paths: dict[tuple[str, str], Path],
+    raw_paths: dict[tuple[str, str], Path],
+) -> None:
+    """Create symlinks in processed_clips/ and raw_clips/ using direct path lookups."""
+    proc_count: defaultdict[tuple[str, str], int] = defaultdict(int)
+    raw_count: defaultdict[tuple[str, str], int] = defaultdict(int)
+    proc_skip = 0
 
-    print("Pass 1: computing trial splits across all conditions...")
-    split = _build_combined_trial_split(csv_paths, SPLIT_SEED)
-    for cls in ("Deceptive", "Truthful"):
-        print(f"  {cls}: {len(split[cls]['train'])} train, {len(split[cls]['test'])} test trials")
-
-    print("\nPass 2: writing combined openface CSVs...")
-    _write_combined_csvs(csv_paths, split, SPLITS_DIR)
-
-    print("\nCreating Clips and Transcription symlinks...")
     for cls in ("Deceptive", "Truthful"):
         for split_name_lower in ("train", "test"):
             split_name = split_name_lower.capitalize()
             for condition, trial_id in split[cls][split_name_lower]:
-                if condition == "commanded_low_stakes":
-                    matches = list((ORGANIZED_DIR / "Clips" / cls).glob(f"*-{trial_id}.mp4"))
-                else:
-                    matches = list((ORGANIZED_DIR / "Clips" / cls).glob(f"{trial_id}.mp4"))
-                for src in matches:
-                    dst = SPLITS_DIR / split_name / cls / "Clips" / src.name
+                key = (condition, trial_id)
+
+                # Processed clip symlink
+                if key in proc_paths:
+                    src = proc_paths[key]
+                    dst = PROCESSED_CLIPS_DIR / split_name / cls / src.name
                     if not dst.exists():
                         dst.symlink_to(src.resolve())
+                    proc_count[(split_name, cls)] += 1
+                else:
+                    proc_skip += 1
 
-                trans_src = ORGANIZED_DIR / "Transcription" / cls / f"{trial_id}.csv"
-                if trans_src.exists():
-                    dst = SPLITS_DIR / split_name / cls / "Transcription" / f"{trial_id}.csv"
+                # Raw clip symlink
+                if key in raw_paths:
+                    src = raw_paths[key]
+                    dst = RAW_CLIPS_DIR / split_name / cls / src.name
                     if not dst.exists():
-                        dst.symlink_to(trans_src.resolve())
+                        dst.symlink_to(src.resolve())
+                    raw_count[(split_name, cls)] += 1
+
+    for (split_name, cls), n in sorted(proc_count.items()):
+        print(f"  processed_clips/{split_name}/{cls}/: {n} symlinks")
+    for (split_name, cls), n in sorted(raw_count.items()):
+        print(f"  raw_clips/{split_name}/{cls}/: {n} symlinks")
+    if proc_skip:
+        print(f"  Skipped {proc_skip} trials with no processed clip")
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+
+def main() -> None:
+    """Organize dataset using pre-existing split list files under splits/.
+
+    Run dump_split_lists() once manually to (re-)generate those files from openface_bk.
+    """
+    # Create output directories
+    for split_name in ("Train", "Test"):
+        for category in ("Deceptive", "Truthful"):
+            (OPENFACE_DIR / split_name / category).mkdir(parents=True, exist_ok=True)
+            (RAW_CLIPS_DIR / split_name / category).mkdir(parents=True, exist_ok=True)
+            (PROCESSED_CLIPS_DIR / split_name / category).mkdir(
+                parents=True, exist_ok=True
+            )
+
+    print("Step 1: Loading split and building path lookups...")
+    split, proc_paths, raw_paths = _load_split_from_lists()
+    for cls in ("Deceptive", "Truthful"):
+        print(
+            f"  {cls}: {len(split[cls]['train'])} train, {len(split[cls]['test'])} test trials"
+        )
+
+    print("\nStep 2: Writing OpenFace CSVs...")
+    _write_openface_csvs(split)
+
+    print("\nStep 3: Creating clip symlinks...")
+    _create_clip_symlinks(split, proc_paths, raw_paths)
+
+    print("\nDone.")
 
 
 if __name__ == "__main__":
     main()
-    split_openface_and_symlinks()

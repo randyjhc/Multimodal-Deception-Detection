@@ -1,77 +1,110 @@
 #!/usr/bin/env python3
-"""Smoke-test MultimodalDataset and make_multimodal_loaders() with the UR_LYING dataset."""
+"""Check cross-directory consistency for UR_LYING dataset."""
 
 import argparse
+import sys
+from pathlib import Path
+from typing import Callable
 
-import torch
+from multimodal_dataset import openface_ur_lying_key, opensmile_ur_lying_key
 
-from multimodal_dataset import (
-    make_multimodal_loaders,
-    openface_ur_lying_key,
-    opensmile_ur_lying_key,
-)
-
-DEFAULT_OPENFACE_ROOT = "dataset/UR_LYING_Deception_Dataset/openface"
-DEFAULT_OPENSMILE_ROOT = "dataset/UR_LYING_Deception_Dataset/opensmile"
-
-
-def test_loader(name: str, loader: torch.utils.data.DataLoader) -> None:
-    total_d = total_t = 0
-    v_min = a_min = float("inf")
-    v_max = a_max = 0
-    first_v_shape: tuple[int, ...] | None = None
-    first_a_shape: tuple[int, ...] | None = None
-
-    for visual_x, visual_len, audio_x, audio_len, y in loader:
-        if first_v_shape is None:
-            first_v_shape = tuple(visual_x.shape)
-            first_a_shape = tuple(audio_x.shape)
-        total_d += int(y.sum().item())
-        total_t += int((y == 0).sum().item())
-        v_min = min(v_min, int(visual_len.min().item()))
-        v_max = max(v_max, int(visual_len.max().item()))
-        a_min = min(a_min, int(audio_len.min().item()))
-        a_max = max(a_max, int(audio_len.max().item()))
-
-    print(
-        f"  {name}: {len(loader)} batches | "
-        f"visual {first_v_shape} len=[{v_min},{v_max}] | "
-        f"audio {first_a_shape} len=[{a_min},{a_max}] | "
-        f"labels D={total_d} T={total_t}"
-    )
+DEFAULT_ROOT = "dataset/UR_LYING_Deception_Dataset"
+DEFAULT_OPENFACE_ROOT = f"{DEFAULT_ROOT}/openface"
+DEFAULT_OPENSMILE_ROOT = f"{DEFAULT_ROOT}/opensmile"
+DEFAULT_RAW_CLIPS_ROOT = f"{DEFAULT_ROOT}/raw_clips"
+DEFAULT_PROCESSED_CLIPS_ROOT = f"{DEFAULT_ROOT}/processed_clips"
 
 
-def collect_lengths(
-    loader: torch.utils.data.DataLoader,
-) -> dict[str, list[int]]:
-    """Collect per-sample sequence lengths by iterating the underlying dataset."""
-    visual_lens: list[int] = []
-    audio_lens: list[int] = []
-    ds = loader.dataset
-    for i in range(len(ds)):  # type: ignore[arg-type]
-        v, a, _ = ds[i]  # type: ignore[index]
-        visual_lens.append(v.shape[0])
-        audio_lens.append(a.shape[0])
-    return {"visual": visual_lens, "audio": audio_lens}
+# ---------------------------------------------------------------------------
+# Cross-directory consistency check
+# ---------------------------------------------------------------------------
 
 
-def print_length_stats(
-    split: str,
-    before: dict[str, list[int]],
-    after: dict[str, list[int]],
-    vk: int,
-    ak: int,
-) -> None:
-    for modality, k in (("visual", vk), ("audio", ak)):
-        b = before[modality]
-        a = after[modality]
-        b_mean = sum(b) / len(b)
-        a_mean = sum(a) / len(a)
-        print(
-            f"  [{split}] {modality} (k={k}): "
-            f"before mean={b_mean:.0f} min={min(b)} max={max(b)}  |  "
-            f"after  mean={a_mean:.0f} min={min(a)} max={max(a)}"
-        )
+def _collect_keys(
+    directory: Path, key_fn: Callable[[str], str], extensions: tuple[str, ...]
+) -> set[str]:
+    """Return canonical keys for all matching files in a directory."""
+    keys: set[str] = set()
+    for ext in extensions:
+        for f in directory.glob(ext):
+            keys.add(key_fn(f.stem))
+    return keys
+
+
+def check_consistency(
+    openface_root: Path,
+    opensmile_root: Path,
+    raw_clips_root: Path,
+    processed_clips_root: Path,
+) -> bool:
+    """Check that all four directories contain the same trials per (split, class).
+
+    Each directory uses a different filename convention, but all reduce to the
+    same canonical trial key via the appropriate key function:
+      - openface / raw_clips  : openface_ur_lying_key  (strips -W-B/T-userNN suffix)
+      - opensmile / processed_clips : opensmile_ur_lying_key (drops leading HH- segment)
+
+    Returns True if all checks pass, False if any mismatch is found.
+    """
+    dir_configs: dict[str, tuple[Path, Callable[[str], str], tuple[str, ...]]] = {
+        "openface": (openface_root, openface_ur_lying_key, ("*.csv",)),
+        "opensmile": (opensmile_root, opensmile_ur_lying_key, ("*.csv",)),
+        "raw_clips": (raw_clips_root, openface_ur_lying_key, ("*.mp4",)),
+        "processed_clips": (processed_clips_root, opensmile_ur_lying_key, ("*.mp4",)),
+    }
+
+    all_ok = True
+
+    for split in ("Train", "Test"):
+        for cls in ("Deceptive", "Truthful"):
+            key_sets: dict[str, set[str]] = {}
+            for name, (root, key_fn, exts) in dir_configs.items():
+                subdir = root / split / cls
+                if not subdir.exists():
+                    print(f"  MISSING dir: {subdir}")
+                    all_ok = False
+                    key_sets[name] = set()
+                else:
+                    key_sets[name] = _collect_keys(subdir, key_fn, exts)
+
+            counts = {n: len(k) for n, k in key_sets.items()}
+            count_str = "  ".join(f"{n}={c}" for n, c in counts.items())
+            counts_match = len(set(counts.values())) == 1
+
+            status = "OK" if counts_match else "COUNT MISMATCH"
+            print(f"  {split}/{cls}: {count_str}  {status}")
+
+            if not counts_match:
+                all_ok = False
+
+            # Report key-level mismatches between each pair of directories
+            names = list(key_sets.keys())
+            for i in range(len(names)):
+                for j in range(i + 1, len(names)):
+                    n1, n2 = names[i], names[j]
+                    only_1 = sorted(key_sets[n1] - key_sets[n2])
+                    only_2 = sorted(key_sets[n2] - key_sets[n1])
+                    if only_1:
+                        preview = only_1[:5]
+                        ellipsis = "..." if len(only_1) > 5 else ""
+                        print(
+                            f"    In {n1} not {n2} ({len(only_1)}): {preview}{ellipsis}"
+                        )
+                        all_ok = False
+                    if only_2:
+                        preview = only_2[:5]
+                        ellipsis = "..." if len(only_2) > 5 else ""
+                        print(
+                            f"    In {n2} not {n1} ({len(only_2)}): {preview}{ellipsis}"
+                        )
+                        all_ok = False
+
+    return all_ok
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
 
 
 def main() -> None:
@@ -86,76 +119,35 @@ def main() -> None:
         default=DEFAULT_OPENSMILE_ROOT,
         help="Path to OpenSMILE features root",
     )
-    parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument(
-        "--visual-subsample-k",
-        type=int,
-        default=1,
-        help="Visual subsampling factor (keep every k-th frame)",
+        "--raw-clips-root",
+        default=DEFAULT_RAW_CLIPS_ROOT,
+        help="Path to raw_clips root",
     )
     parser.add_argument(
-        "--audio-subsample-k",
-        type=int,
-        default=1,
-        help="Audio subsampling factor (keep every k-th frame); default matches run_training_gru.py",
+        "--processed-clips-root",
+        default=DEFAULT_PROCESSED_CLIPS_ROOT,
+        help="Path to processed_clips root",
     )
     args = parser.parse_args()
 
-    print(f"OpenFace root:  {args.openface_root}")
-    print(f"OpenSMILE root: {args.opensmile_root}")
-    print(
-        f"visual_subsample_k={args.visual_subsample_k}  audio_subsample_k={args.audio_subsample_k}\n"
+    print(f"OpenFace root:       {args.openface_root}")
+    print(f"OpenSMILE root:      {args.opensmile_root}")
+    print(f"raw_clips root:      {args.raw_clips_root}")
+    print(f"processed_clips root:{args.processed_clips_root}\n")
+
+    print("--- Cross-directory consistency ---")
+    consistent = check_consistency(
+        openface_root=Path(args.openface_root),
+        opensmile_root=Path(args.opensmile_root),
+        raw_clips_root=Path(args.raw_clips_root),
+        processed_clips_root=Path(args.processed_clips_root),
     )
-
-    # --- loaders without subsampling (to measure "before" lengths) ---
-    train_b, val_b, test_b, visual_d_in, audio_d_in = make_multimodal_loaders(
-        openface_root=args.openface_root,
-        opensmile_root=args.opensmile_root,
-        batch_size=args.batch_size,
-        visual_key_fn=openface_ur_lying_key,
-        audio_key_fn=opensmile_ur_lying_key,
-        visual_subsample_k=1,
-        audio_subsample_k=1,
-    )
-
-    # --- loaders with requested subsampling (to measure "after" lengths) ---
-    train, val, test, _, _ = make_multimodal_loaders(
-        openface_root=args.openface_root,
-        opensmile_root=args.opensmile_root,
-        batch_size=args.batch_size,
-        visual_key_fn=openface_ur_lying_key,
-        audio_key_fn=opensmile_ur_lying_key,
-        visual_subsample_k=args.visual_subsample_k,
-        audio_subsample_k=args.audio_subsample_k,
-        visual_motion_method="feature_diff",
-        visual_motion_low=0.2,
-        audio_motion_method="feature_diff",
-        audio_motion_low=0.2,
-    )
-
-    print(
-        f"visual_d_in={visual_d_in}  audio_d_in={audio_d_in} | "
-        f"train={len(train)} batches  val={len(val)} batches  test={len(test)} batches\n"
-    )
-
-    print("--- Sequence length: before vs after subsampling ---")
-    for name, lb, la in (
-        ("train", train_b, train),
-        ("val  ", val_b, val),
-        ("test ", test_b, test),
-    ):
-        before = collect_lengths(lb)
-        after = collect_lengths(la)
-        print_length_stats(
-            name, before, after, args.visual_subsample_k, args.audio_subsample_k
-        )
-    print()
-
-    print("--- Loader smoke test (after subsampling) ---")
-    test_loader("train", train)
-    test_loader("val  ", val)
-    test_loader("test ", test)
-    print("OK")
+    if consistent:
+        print("All directories are consistent.")
+    else:
+        print("WARNING: directories are NOT fully consistent (see above).")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
