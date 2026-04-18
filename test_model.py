@@ -18,6 +18,8 @@ from torch.utils.data import DataLoader
 
 from dataset.multimodal_dataset import (
     MultimodalDataset,
+    MultimodalDatasetAVT,
+    _avt_collate,
     _multimodal_collate,
     openface_ur_lying_key,
     opensmile_ur_lying_key,
@@ -55,19 +57,19 @@ def _print_metrics(
         else 0.0
     )
 
-    print(f"\n{'='*40}")
+    print(f"\n{'=' * 40}")
     print(f"Test samples : {total}")
     print(f"Test loss    : {avg_loss:.4f}")
     print(f"Test accuracy: {total_correct / total:.4f}  ({total_correct}/{total})")
     print(f"Precision    : {precision:.4f}")
     print(f"Recall       : {recall:.4f}")
     print(f"F1 score     : {f1:.4f}")
-    print(f"{'='*40}")
+    print(f"{'=' * 40}")
     print("Confusion matrix  (rows=actual, cols=predicted)")
     print("              Pred-T  Pred-D")
     print(f"  Actual-T :   {tn:4d}    {fp:4d}")
     print(f"  Actual-D :   {fn:4d}    {tp:4d}")
-    print(f"{'='*40}")
+    print(f"{'=' * 40}")
 
 
 def evaluate_bilstm(
@@ -178,6 +180,86 @@ def evaluate_multimodal(
     _print_metrics(total, total_loss / total, total_correct, all_preds, all_labels)
 
 
+def evaluate_avt(
+    ckpt: dict,
+    root: str | None,
+    opensmile_root: str | None,
+    whisper_root: str | None,
+    device: torch.device,
+) -> None:
+    mc = ckpt["model_config"]
+    dc = ckpt["dataset_config"]
+    openface_root = root or dc["openface_root"]
+    audio_root = opensmile_root or dc["opensmile_root"]
+    text_root = whisper_root or dc["whisper_root"]
+
+    test_ds = MultimodalDatasetAVT(
+        openface_root,
+        audio_root,
+        text_root,
+        split="Test",
+        whisper_source=dc.get("whisper_source", "raw"),
+        visual_key_fn=openface_ur_lying_key,
+        audio_key_fn=opensmile_ur_lying_key,
+        audio_subsample_k=dc["audio_subsample_k"],
+        visual_subsample_k=dc["visual_subsample_k"],
+        audio_motion_method=dc["audio_motion_method"],
+        audio_motion_low=dc["audio_motion_low"],
+        audio_motion_high=dc["audio_motion_high"],
+        visual_motion_method=dc["visual_motion_method"],
+        visual_motion_low=dc["visual_motion_low"],
+        visual_motion_high=dc["visual_motion_high"],
+    )
+    test_loader = DataLoader(
+        test_ds, batch_size=16, shuffle=False, collate_fn=_avt_collate
+    )
+
+    model = LateFusionBiGRUClassifier(
+        visual_d_in=mc["visual_d_in"],
+        audio_d_in=mc["audio_d_in"],
+        text_d_in=mc["text_d_in"],
+        hidden=mc["hidden"],
+        num_layers=mc["num_layers"],
+        dropout=mc["dropout"],
+        pooling=mc["pooling"],
+        fusion_hidden=mc["fusion_hidden"],
+        use_visual=True,
+        use_audio=True,
+        use_text=True,
+    )
+    model.load_state_dict(ckpt["model_state_dict"])
+    model.to(device).eval()
+
+    criterion = torch.nn.BCEWithLogitsLoss()
+    total_loss, total_correct, total = 0.0, 0, 0
+    all_preds: list[float] = []
+    all_labels: list[float] = []
+
+    with torch.no_grad():
+        for (
+            visual_x,
+            visual_len,
+            audio_x,
+            audio_len,
+            text_x,
+            text_len,
+            y,
+        ) in test_loader:
+            visual_x, visual_len = visual_x.to(device), visual_len.to(device)
+            audio_x, audio_len = audio_x.to(device), audio_len.to(device)
+            text_x, text_len = text_x.to(device), text_len.to(device)
+            y = y.to(device)
+            logits = model(visual_x, visual_len, audio_x, audio_len, text_x, text_len)
+            total_loss += criterion(logits, y).item() * y.size(0)
+            preds = (torch.sigmoid(logits) >= 0.5).float()
+            total_correct += (preds == y).sum().item()
+            total += y.size(0)
+            all_preds.extend(preds.cpu().tolist())
+            all_labels.extend(y.cpu().tolist())
+
+    _print_metrics(total, total_loss / total, total_correct, all_preds, all_labels)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--ckpt", default="best_bigru.pt", help="Path to checkpoint")
@@ -189,6 +271,11 @@ if __name__ == "__main__":
         default=None,
         help="Override OpenSMILE root for multimodal checkpoints (default: from checkpoint)",
     )
+    parser.add_argument(
+        "--whisper_root",
+        default=None,
+        help="Override Whisper root for AVT checkpoints (default: from checkpoint)",
+    )
     parser.add_argument("--device", default="cuda")
     args = parser.parse_args()
 
@@ -198,7 +285,10 @@ if __name__ == "__main__":
 
     print(f"Loaded   : {args.ckpt}")
     print(f"Type     : {model_type}")
-    if "bset_val_acc" in ckpt:
+    if "best_val_acc" in ckpt:
+        print(f"Val acc  : {ckpt['best_val_acc']:.4f}  (epoch {ckpt['epoch']})")
+        print(f"Val loss : {ckpt['best_val_loss']:.4f}")
+    elif "bset_val_acc" in ckpt:
         print(f"Val acc  : {ckpt['bset_val_acc']:.4f}  (epoch {ckpt['epoch']})")
         print(f"Val loss : {ckpt['best_val_loss']:.4f}")
     elif "val_acc" in ckpt:
@@ -207,7 +297,9 @@ if __name__ == "__main__":
         print(f"CV acc   : {ckpt['mean_val_acc']:.4f}  (avg epoch {ckpt['avg_epoch']})")
     print(f"Device   : {device}")
 
-    if model_type == "multimodal":
+    if model_type == "multimodal_avt":
+        evaluate_avt(ckpt, args.root, args.opensmile_root, args.whisper_root, device)
+    elif model_type == "multimodal":
         evaluate_multimodal(ckpt, args.root, args.opensmile_root, device)
     else:
         evaluate_bilstm(ckpt, args.root, device)
