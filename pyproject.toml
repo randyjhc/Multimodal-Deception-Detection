@@ -24,6 +24,7 @@ include = ["dataset*", "model*"]
 dataset = [
     "scipy>=1.17.1",
     "matplotlib>=3.9.0",
+    "openai-whisper>=20240930",
 ]
 dev = [
     "mypy>=1.19.1",

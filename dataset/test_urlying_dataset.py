@@ -13,6 +13,8 @@ DEFAULT_OPENFACE_ROOT = f"{DEFAULT_ROOT}/openface"
 DEFAULT_OPENSMILE_ROOT = f"{DEFAULT_ROOT}/opensmile"
 DEFAULT_RAW_CLIPS_ROOT = f"{DEFAULT_ROOT}/raw_clips"
 DEFAULT_PROCESSED_CLIPS_ROOT = f"{DEFAULT_ROOT}/processed_clips"
+DEFAULT_WHISPER_RAW_ROOT = f"{DEFAULT_ROOT}/whisper_raw"
+DEFAULT_WHISPER_PROCESSED_ROOT = f"{DEFAULT_ROOT}/whisper_processed"
 
 
 # ---------------------------------------------------------------------------
@@ -36,13 +38,17 @@ def check_consistency(
     opensmile_root: Path,
     raw_clips_root: Path,
     processed_clips_root: Path,
+    whisper_raw_root: Path,
+    whisper_processed_root: Path,
 ) -> bool:
-    """Check that all four directories contain the same trials per (split, class).
+    """Check that all six directories contain the same trials per (split, class).
 
     Each directory uses a different filename convention, but all reduce to the
     same canonical trial key via the appropriate key function:
-      - openface / raw_clips  : openface_ur_lying_key  (strips -W-B/T-userNN suffix)
-      - opensmile / processed_clips : opensmile_ur_lying_key (drops leading HH- segment)
+      - openface / raw_clips / whisper_raw / whisper_processed:
+            openface_ur_lying_key  (strips -W-B/T-userNN suffix; no-op for already-canonical stems)
+      - opensmile / processed_clips:
+            opensmile_ur_lying_key (drops leading HH- segment)
 
     Returns True if all checks pass, False if any mismatch is found.
     """
@@ -51,6 +57,12 @@ def check_consistency(
         "opensmile": (opensmile_root, opensmile_ur_lying_key, ("*.csv",)),
         "raw_clips": (raw_clips_root, openface_ur_lying_key, ("*.mp4",)),
         "processed_clips": (processed_clips_root, opensmile_ur_lying_key, ("*.mp4",)),
+        "whisper_raw": (whisper_raw_root, openface_ur_lying_key, ("*.txt",)),
+        "whisper_processed": (
+            whisper_processed_root,
+            openface_ur_lying_key,
+            ("*.txt",),
+        ),
     }
 
     all_ok = True
@@ -129,12 +141,24 @@ def main() -> None:
         default=DEFAULT_PROCESSED_CLIPS_ROOT,
         help="Path to processed_clips root",
     )
+    parser.add_argument(
+        "--whisper-raw-root",
+        default=DEFAULT_WHISPER_RAW_ROOT,
+        help="Path to whisper_raw root",
+    )
+    parser.add_argument(
+        "--whisper-processed-root",
+        default=DEFAULT_WHISPER_PROCESSED_ROOT,
+        help="Path to whisper_processed root",
+    )
     args = parser.parse_args()
 
-    print(f"OpenFace root:       {args.openface_root}")
-    print(f"OpenSMILE root:      {args.opensmile_root}")
-    print(f"raw_clips root:      {args.raw_clips_root}")
-    print(f"processed_clips root:{args.processed_clips_root}\n")
+    print(f"OpenFace root:          {args.openface_root}")
+    print(f"OpenSMILE root:         {args.opensmile_root}")
+    print(f"raw_clips root:         {args.raw_clips_root}")
+    print(f"processed_clips root:   {args.processed_clips_root}")
+    print(f"whisper_raw root:       {args.whisper_raw_root}")
+    print(f"whisper_processed root: {args.whisper_processed_root}\n")
 
     print("--- Cross-directory consistency ---")
     consistent = check_consistency(
@@ -142,6 +166,8 @@ def main() -> None:
         opensmile_root=Path(args.opensmile_root),
         raw_clips_root=Path(args.raw_clips_root),
         processed_clips_root=Path(args.processed_clips_root),
+        whisper_raw_root=Path(args.whisper_raw_root),
+        whisper_processed_root=Path(args.whisper_processed_root),
     )
     if consistent:
         print("All directories are consistent.")
