@@ -288,9 +288,6 @@ if __name__ == "__main__":
     if "best_val_acc" in ckpt:
         print(f"Val acc  : {ckpt['best_val_acc']:.4f}  (epoch {ckpt['epoch']})")
         print(f"Val loss : {ckpt['best_val_loss']:.4f}")
-    elif "bset_val_acc" in ckpt:
-        print(f"Val acc  : {ckpt['bset_val_acc']:.4f}  (epoch {ckpt['epoch']})")
-        print(f"Val loss : {ckpt['best_val_loss']:.4f}")
     elif "val_acc" in ckpt:
         print(f"Val acc  : {ckpt['val_acc']:.4f}  (epoch {ckpt['epoch']})")
     elif "mean_val_acc" in ckpt:

@@ -242,7 +242,7 @@ if not USE_CV:
             torch.save(
                 {
                     "model_state_dict": model.state_dict(),
-                    "bset_val_acc": best_val_acc,
+                    "best_val_acc": best_val_acc,
                     "best_val_loss": best_val_loss,
                     "epoch": epoch,
                     "model_type": "multimodal",
