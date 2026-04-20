@@ -134,7 +134,14 @@ class OpenFaceDataset(Dataset):
         filtered = df[(df["success"] == 1) & (df["confidence"] >= self.min_confidence)]
         df = filtered if len(filtered) > 0 else df
 
-        seq = torch.tensor(df[self.feature_cols].values, dtype=torch.float32)
+        # Some raw OpenFace exports contain isolated NaNs in otherwise valid
+        # clips. Sanitize before normalization so one bad row does not poison
+        # the entire sequence statistics.
+        features = df[self.feature_cols].apply(pd.to_numeric, errors="coerce")
+        features = features.replace([np.inf, -np.inf], np.nan)
+        features = features.ffill().bfill().fillna(0.0)
+
+        seq = torch.tensor(features.values, dtype=torch.float32)
 
         # Per-sample z-score normalization before motion filtering.
         seq = (seq - seq.mean(dim=0, keepdim=True)) / seq.std(

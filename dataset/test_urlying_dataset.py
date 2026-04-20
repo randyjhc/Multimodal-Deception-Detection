@@ -9,10 +9,10 @@ from typing import Callable
 from multimodal_dataset import openface_ur_lying_key, opensmile_ur_lying_key
 
 DEFAULT_ROOT = "dataset/UR_LYING_Deception_Dataset"
-DEFAULT_OPENFACE_ROOT = f"{DEFAULT_ROOT}/openface"
-DEFAULT_OPENSMILE_ROOT = f"{DEFAULT_ROOT}/opensmile"
-DEFAULT_RAW_CLIPS_ROOT = f"{DEFAULT_ROOT}/raw_clips"
-DEFAULT_PROCESSED_CLIPS_ROOT = f"{DEFAULT_ROOT}/processed_clips"
+DEFAULT_OPENFACE_ROOT = f"{DEFAULT_ROOT}/openface_raw"
+DEFAULT_OPENSMILE_ROOT = f"{DEFAULT_ROOT}/opensmile_raw"
+DEFAULT_RAW_CLIPS_ROOT = f"{DEFAULT_ROOT}/clips_raw"
+DEFAULT_PROCESSED_CLIPS_ROOT = f"{DEFAULT_ROOT}/clips_processed"
 DEFAULT_WHISPER_RAW_ROOT = f"{DEFAULT_ROOT}/whisper_raw"
 DEFAULT_WHISPER_PROCESSED_ROOT = f"{DEFAULT_ROOT}/whisper_processed"
 

@@ -303,7 +303,6 @@ class MultimodalDatasetAVT(Dataset):
         opensmile_root: str,
         whisper_root: str,
         split: str = "Train",
-        whisper_source: Literal["raw", "processed"] = "raw",
         visual_feature_cols: Optional[List[str]] = None,
         audio_feature_cols: Optional[List[str]] = None,
         min_confidence: float = 0.5,
@@ -361,7 +360,6 @@ class MultimodalDatasetAVT(Dataset):
         self._text_loader = WhisperDataset(
             whisper_root,
             split,
-            whisper_source,
             model_name=roberta_model,
             max_length=roberta_max_length,
             key_fn=_tkey,
@@ -374,7 +372,7 @@ class MultimodalDatasetAVT(Dataset):
         visual_map = _build_stem_map(Path(openface_root) / split, _vkey)
         audio_map = _build_stem_map(Path(opensmile_root) / split, _akey)
         text_map = _build_stem_map(
-            Path(whisper_root) / f"whisper_{whisper_source}" / split,
+            Path(whisper_root) / split,
             _tkey,
             glob="*.txt",
         )
@@ -464,7 +462,6 @@ def make_avt_loaders(
     openface_root: str,
     opensmile_root: str,
     whisper_root: str,
-    whisper_source: Literal["raw", "processed"] = "raw",
     val_frac: float = 0.2,
     batch_size: int = 16,
     num_workers: int = 0,
@@ -492,7 +489,6 @@ def make_avt_loaders(
         train_loader, val_loader, test_loader, visual_d_in, audio_d_in, text_d_in
     """
     kwargs: dict = dict(
-        whisper_source=whisper_source,
         visual_feature_cols=visual_feature_cols,
         audio_feature_cols=audio_feature_cols,
         min_confidence=min_confidence,

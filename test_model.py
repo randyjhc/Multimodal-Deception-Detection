@@ -198,7 +198,6 @@ def evaluate_avt(
         audio_root,
         text_root,
         split="Test",
-        whisper_source=dc.get("whisper_source", "raw"),
         visual_key_fn=openface_ur_lying_key,
         audio_key_fn=opensmile_ur_lying_key,
         audio_subsample_k=dc["audio_subsample_k"],

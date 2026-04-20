@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Organize UR_LYING dataset into openface/, raw_clips/, and processed_clips/ with train/test splits.
+"""Organize UR_LYING dataset into openface_original/, clips_raw/, and clips_processed/ with train/test splits.
 
 Split assignments are read from openface_bk/ (the gold source) and written to four
 text files under splits/:
@@ -12,19 +12,19 @@ text files under splits/:
 
 organize_ur_lying.py then reads those lists to drive all output:
 
-    openface/
+    openface_original/
     ├── Train/
     │   ├── Deceptive/   ← per-trial OpenFace feature CSVs (W-B trials)
     │   └── Truthful/    ← per-trial OpenFace feature CSVs (W-T trials)
     └── Test/  (same layout)
 
-    raw_clips/
+    clips_raw/
     ├── Train/
     │   ├── Deceptive/   → symlinks to raw W-B videos in v1.0/raw_data/
     │   └── Truthful/    → symlinks to raw W-T videos in v1.0/raw_data/
     └── Test/  (same layout)
 
-    processed_clips/
+    clips_processed/
     ├── Train/
     │   ├── Deceptive/   → symlinks to merged videos in v1.0/processed_data/merged_videos/
     │   └── Truthful/
@@ -33,7 +33,7 @@ organize_ur_lying.py then reads those lists to drive all output:
 Classification: W-B (Bluff) → Deceptive, W-T (Truth) → Truthful.
 Interrogator (I-file) rows/videos are excluded.
 ~21 trials have no processed/merged video (raw video exists but was not merged);
-these will appear in openface/ and raw_clips/ but not in processed_clips/.
+these will appear in openface_original/ and clips_raw/ but not in clips_processed/.
 """
 
 import re
@@ -47,12 +47,12 @@ PROCESSED_DIR = BASE_DIR / "v1.0" / "processed_data" / "merged_videos"
 RAW_DIR = BASE_DIR / "v1.0" / "raw_data"
 OPENFACE_SRC = BASE_DIR / "v1.0" / "processed_data" / "openface_features"
 
-OPENFACE_BK_DIR = BASE_DIR / "openface_bk"
+OPENFACE_BK_DIR = BASE_DIR / "openface_original"
 SPLITS_LIST_DIR = BASE_DIR / "splits"
 
-OPENFACE_DIR = BASE_DIR / "openface"
-RAW_CLIPS_DIR = BASE_DIR / "raw_clips"
-PROCESSED_CLIPS_DIR = BASE_DIR / "processed_clips"
+OPENFACE_DIR = BASE_DIR / "openface_original"
+RAW_CLIPS_DIR = BASE_DIR / "clips_raw"
+PROCESSED_CLIPS_DIR = BASE_DIR / "clips_processed"
 
 CONDITIONS = ["commanded_low_stakes", "commanded_med_stakes", "voluntary_med_stakes"]
 
@@ -97,7 +97,7 @@ _LIST_NAMES: dict[tuple[str, str], str] = {
 
 
 def dump_split_lists() -> None:
-    """Write 4 text files to splits/ with one canonical key per line, derived from openface_bk."""
+    """Write 4 text files to splits/ with one canonical key per line, derived from openface_original."""
     SPLITS_LIST_DIR.mkdir(parents=True, exist_ok=True)
     for (split_name, cls), fname in _LIST_NAMES.items():
         src_dir = OPENFACE_BK_DIR / split_name / cls
@@ -231,7 +231,7 @@ def _write_openface_csvs(split: dict) -> None:
         counts[(split_name, cls)] += 1
 
     for (split_name, cls), n in sorted(counts.items()):
-        print(f"  Wrote {n} trial CSVs to openface/{split_name}/{cls}/")
+        print(f"  Wrote {n} trial CSVs to openface_original/{split_name}/{cls}/")
 
 
 # ---------------------------------------------------------------------------
@@ -274,9 +274,9 @@ def _create_clip_symlinks(
                     raw_count[(split_name, cls)] += 1
 
     for (split_name, cls), n in sorted(proc_count.items()):
-        print(f"  processed_clips/{split_name}/{cls}/: {n} symlinks")
+        print(f"  clips_processed/{split_name}/{cls}/: {n} symlinks")
     for (split_name, cls), n in sorted(raw_count.items()):
-        print(f"  raw_clips/{split_name}/{cls}/: {n} symlinks")
+        print(f"  clips_raw/{split_name}/{cls}/: {n} symlinks")
     if proc_skip:
         print(f"  Skipped {proc_skip} trials with no processed clip")
 
@@ -287,10 +287,12 @@ def _create_clip_symlinks(
 
 
 def main() -> None:
-    """Organize dataset using pre-existing split list files under splits/.
+    """Organize dataset, generating split list files from openface_bk if missing."""
+    # Generate split lists if they don't exist yet
+    if not all((SPLITS_LIST_DIR / fname).exists() for fname in _LIST_NAMES.values()):
+        print("Generating split lists from openface_bk...")
+        dump_split_lists()
 
-    Run dump_split_lists() once manually to (re-)generate those files from openface_bk.
-    """
     # Create output directories
     for split_name in ("Train", "Test"):
         for category in ("Deceptive", "Truthful"):

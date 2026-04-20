@@ -33,10 +33,9 @@ from model.LateFusionBiGRU import LateFusionBiGRUClassifier
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-OPENFACE_ROOT = "dataset/UR_LYING_Deception_Dataset/openface"
-OPENSMILE_ROOT = "dataset/UR_LYING_Deception_Dataset/opensmile"
-WHISPER_ROOT = "dataset/UR_LYING_Deception_Dataset"
-WHISPER_SOURCE = "processed"  # "raw" | "processed"
+OPENFACE_ROOT = "dataset/UR_LYING_Deception_Dataset/openface_raw"
+OPENSMILE_ROOT = "dataset/UR_LYING_Deception_Dataset/opensmile_raw"
+WHISPER_ROOT = "dataset/UR_LYING_Deception_Dataset/whisper_raw"
 
 BATCH_SIZE = 16
 EPOCHS = 30
@@ -171,7 +170,6 @@ def _loader_kwargs(
 # Dataset kwargs shared by both modes
 # ---------------------------------------------------------------------------
 _ds_kwargs: dict = dict(
-    whisper_source=WHISPER_SOURCE,
     visual_key_fn=openface_ur_lying_key,
     audio_key_fn=opensmile_ur_lying_key,
     audio_subsample_k=AUDIO_SUBSAMPLE_K,
@@ -240,7 +238,7 @@ if not USE_CV:
             f" | Val Loss {vl_loss:.4f} Acc {vl_acc:.4f}"
         )
 
-        if vl_loss < best_val_loss:
+        if vl_loss < best_val_loss or vl_acc > best_val_acc:
             best_val_acc = vl_acc
             best_val_loss = vl_loss
             no_improve = 0
@@ -265,7 +263,6 @@ if not USE_CV:
                         "openface_root": OPENFACE_ROOT,
                         "opensmile_root": OPENSMILE_ROOT,
                         "whisper_root": WHISPER_ROOT,
-                        "whisper_source": WHISPER_SOURCE,
                         "audio_subsample_k": AUDIO_SUBSAMPLE_K,
                         "visual_subsample_k": VISUAL_SUBSAMPLE_K,
                         "audio_motion_method": AUDIO_MOTION_METHOD,
@@ -454,7 +451,6 @@ else:
                 "openface_root": OPENFACE_ROOT,
                 "opensmile_root": OPENSMILE_ROOT,
                 "whisper_root": WHISPER_ROOT,
-                "whisper_source": WHISPER_SOURCE,
                 "audio_subsample_k": AUDIO_SUBSAMPLE_K,
                 "visual_subsample_k": VISUAL_SUBSAMPLE_K,
                 "audio_motion_method": AUDIO_MOTION_METHOD,

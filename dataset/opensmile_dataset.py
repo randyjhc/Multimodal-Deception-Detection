@@ -104,7 +104,12 @@ class OpenSmileDataset(Dataset):
         df = pd.read_csv(csv_path)
         df.columns = df.columns.str.strip()
 
-        seq = torch.tensor(df[self.feature_cols].values, dtype=torch.float32)
+        # Sanitize occasional malformed CSV cells before normalization.
+        features = df[self.feature_cols].apply(pd.to_numeric, errors="coerce")
+        features = features.replace([np.inf, -np.inf], np.nan)
+        features = features.ffill().bfill().fillna(0.0)
+
+        seq = torch.tensor(features.values, dtype=torch.float32)
 
         # Per-sample z-score normalization before motion filtering.
         seq = (seq - seq.mean(dim=0, keepdim=True)) / seq.std(

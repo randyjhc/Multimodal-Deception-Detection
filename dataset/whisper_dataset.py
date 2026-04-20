@@ -5,18 +5,18 @@ Embeddings are cached in memory after the first forward pass.
 
 Directory layout expected::
 
-    {root_dir}/whisper_{source}/{split}/{Truthful,Deceptive}/*.txt
+    {root_dir}/{split}/{Truthful,Deceptive}/*.txt
 
 Usage::
 
     from dataset.whisper_dataset import WhisperDataset
 
-    ds = WhisperDataset("dataset/UR_LYING_Deception_Dataset", split="Train")
+    ds = WhisperDataset("dataset/UR_LYING_Deception_Dataset/whisper_processed", split="Train")
     token_embs, label = ds[0]   # token_embs: (T, 768), label: 0 or 1
 """
 
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import torch
 from torch.utils.data import Dataset
@@ -30,11 +30,9 @@ class WhisperDataset(Dataset):
     per-token RoBERTa embeddings (last hidden state, special tokens stripped).
 
     Args:
-        root_dir:   Root directory containing ``whisper_raw/`` and
-                    ``whisper_processed/`` sub-trees.
+        root_dir:   Root directory containing ``{split}/{Truthful,Deceptive}/`` sub-trees
+                    (e.g. ``whisper_processed/`` or ``whisper_raw/``).
         split:      ``"Train"`` or ``"Test"``.
-        source:     ``"raw"`` → reads from ``whisper_raw/``;
-                    ``"processed"`` → reads from ``whisper_processed/``.
         model_name: HuggingFace model identifier (default ``"roberta-base"``).
         max_length: Maximum tokenizer sequence length including special tokens.
         key_fn:     Optional function mapping a filename stem to a canonical key.
@@ -50,19 +48,17 @@ class WhisperDataset(Dataset):
         self,
         root_dir: str,
         split: str = "Train",
-        source: Literal["raw", "processed"] = "raw",
         model_name: str = "roberta-base",
         max_length: int = 512,
         key_fn: Optional[Callable[[str], str]] = None,
     ) -> None:
         self.root_dir = Path(root_dir)
         self.split = split
-        self.source = source
         self.model_name = model_name
         self.max_length = max_length
         self._key_fn = key_fn or (lambda s: s)
 
-        split_dir = self.root_dir / f"whisper_{source}" / split
+        split_dir = self.root_dir / split
         if not split_dir.exists():
             raise FileNotFoundError(f"Whisper split directory not found: {split_dir}")
 
