@@ -118,8 +118,8 @@ def print_length_stats(
         )
 
 
-DEFAULT_OPENFACE_ROOT = "dataset/UR_LYING_Deception_Dataset/openface"
-DEFAULT_OPENSMILE_ROOT = "dataset/UR_LYING_Deception_Dataset/opensmile"
+DEFAULT_OPENFACE_ROOT = "dataset/UR_LYING_Deception_Dataset/openface_raw"
+DEFAULT_OPENSMILE_ROOT = "dataset/UR_LYING_Deception_Dataset/opensmile_raw"
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
