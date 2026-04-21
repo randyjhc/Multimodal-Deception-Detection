@@ -1,25 +1,23 @@
 from torch.nn.utils.rnn import pad_sequence
 import torch
 import torch.nn as nn
-from model import BiLSTM
-from model import BiGRU
+from model import LateFusionBiGRU
 import torch.optim as optim
 import matplotlib.pyplot as plt
-from tqdm import tqdm
 
 def collate_fn(batch):
-    """
-    batch: list of (seq(T_i, D), y)
-    returns:
-      x_padded: (B, T_max, D)
-      lengths: (B,)
-      y: (B,)
-    """
-    seqs, ys = zip(*batch)
-    lengths = torch.tensor([s.shape[0] for s in seqs], dtype=torch.long)
-    x_padded = pad_sequence(seqs, batch_first=True)  # pad with 0
-    y = torch.tensor(ys, dtype=torch.float32)  # 0/1
-    return x_padded, lengths, y
+    visual_seqs, audio_seqs, text_seqs, ys = zip(*batch)
+    visual_lengths = torch.tensor([v.shape[0] for v in visual_seqs], dtype=torch.long)
+    audio_lengths  = torch.tensor([a.shape[0] for a in audio_seqs], dtype=torch.long)
+    text_lengths   = torch.tensor([t.shape[0] for t in text_seqs], dtype=torch.long)
+    
+    visual_x = pad_sequence(visual_seqs, batch_first=True)
+    audio_x  = pad_sequence(audio_seqs, batch_first=True)
+    text_x   = pad_sequence(text_seqs, batch_first=True)
+
+    y = torch.tensor(ys, dtype=torch.float32)
+
+    return visual_x, visual_lengths, audio_x, audio_lengths, text_x, text_lengths, y
 
 
 def train_one_epoch(model, loader, optimizer, criterion, device="cuda"):
@@ -28,10 +26,20 @@ def train_one_epoch(model, loader, optimizer, criterion, device="cuda"):
 
     total_loss, total_correct, total = 0.0, 0, 0
 
-    for x, lengths, y in tqdm(loader, desc="Train"):
-        x, lengths, y = x.to(device), lengths.to(device), y.to(device)
+    for visual_x, visual_lengths, audio_x, audio_lengths, text_x, text_lengths, y in loader:
+        visual_x = visual_x.to(device)
+        visual_lengths = visual_lengths.to(device)
+        audio_x = audio_x.to(device)
+        audio_lengths = audio_lengths.to(device)
+        text_x = text_x.to(device)
+        text_lengths = text_lengths.to(device)
+        y = y.to(device)
 
-        logits = model(x, lengths)  # (B,)
+        logits = model(
+            visual_x, visual_lengths,
+            audio_x, audio_lengths,
+            text_x, text_lengths
+        )
         loss = criterion(logits, y)  # y: float 0/1
 
         optimizer.zero_grad()
@@ -39,13 +47,13 @@ def train_one_epoch(model, loader, optimizer, criterion, device="cuda"):
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)  # Prevent gradient explosion
         optimizer.step()
 
-        total_loss += loss.item() * x.size(0)
+        total_loss += loss.item() * y.size(0)
 
         probs = torch.sigmoid(logits)
         preds = (probs >= 0.5).float()
 
         total_correct += (preds == y).sum().item()
-        total += x.size(0)
+        total += y.size(0)
 
     return (
         total_loss / total,
@@ -59,19 +67,29 @@ def eval_one_epoch(model, loader, criterion, device="cuda"):
 
     total_loss, total_correct, total = 0.0, 0, 0
 
-    for x, lengths, y in tqdm(loader, desc="Val"):
-        x, lengths, y = x.to(device), lengths.to(device), y.to(device)
+    for visual_x, visual_lengths, audio_x, audio_lengths, text_x, text_lengths, y in loader:
+        visual_x = visual_x.to(device)
+        visual_lengths = visual_lengths.to(device)
+        audio_x = audio_x.to(device)
+        audio_lengths = audio_lengths.to(device)
+        text_x = text_x.to(device)
+        text_lengths = text_lengths.to(device)
+        y = y.to(device)
 
-        logits = model(x, lengths)
+        logits = model(
+            visual_x, visual_lengths,
+            audio_x, audio_lengths,
+            text_x, text_lengths
+        )
         loss = criterion(logits, y)
 
-        total_loss += loss.item() * x.size(0)
+        total_loss += loss.item() * y.size(0)
 
         probs = torch.sigmoid(logits)
         preds = (probs >= 0.5).float()
 
         total_correct += (preds == y).sum().item()
-        total += x.size(0)
+        total += y.size(0)
 
     return (
         total_loss / total,
@@ -81,53 +99,47 @@ def eval_one_epoch(model, loader, criterion, device="cuda"):
 def run(
     train_loader,
     val_loader,
-    d_in,
+    visual_d_in,
+    audio_d_in,
+    text_d_in,
+    u_visual, # Use Visual encoder
+    u_audio,  # Use Audio encoder
+    u_text,   # Use Text encoder
+    pooling="attention",   # "mean" | "max" | "last" | "topk_mean" | "attn"
     device="cuda",
     epochs=20,
     lr=1e-3,
     hidden=128,
+    f_hidden=128,
     num_layers=1,
     dropout=0.2,
     save_path="best_bilstm.pt",
     patience=5,
     verbose=True,
-    scheduler: str | None = None,
 ):
 
-    if torch.cuda.is_available():
-        device = torch.device(device)
-    elif torch.backends.mps.is_available():
-        device = torch.device("mps")
-    else:
-        device = torch.device("cpu")
+    device = torch.device(device if torch.cuda.is_available() else "cpu")
 
-    # Using BiLSTM
-    # model = BiLSTM.BiLSTMClassifier(
-    #     d_in=d_in,
-    #     hidden=hidden,
-    #     num_layers=num_layers,
-    #     dropout=dropout,
-    #     pooling="mean"
-    # ).to(device)
-
-    model = BiGRU.BiGRUClassifier(
-        d_in=d_in,
+    model = LateFusionBiGRU.LateFusionBiGRUClassifier(
+        visual_d_in=visual_d_in,
+        audio_d_in=audio_d_in,
+        text_d_in=text_d_in,
         hidden=hidden,
         num_layers=num_layers,
         dropout=dropout,
-        pooling="attention"
+        pooling=pooling,
+        top_k=5,
+        fusion_hidden=f_hidden,
+        use_visual=u_visual,
+        use_audio=u_audio,
+        use_text=u_text
     ).to(device)
 
     # loss
     criterion = nn.BCEWithLogitsLoss()
 
     # optimizer
-    optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
-
-    # lr scheduler
-    lr_scheduler = None
-    if scheduler == "cosine":
-        lr_scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+    optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
 
     best_val_acc = 0.0
     best_val_loss = float("inf")
@@ -165,14 +177,9 @@ def run(
         list_val_loss.append(val_loss)
         list_val_acc.append(val_acc)
 
-        current_lr = optimizer.param_groups[0]["lr"]
-        if lr_scheduler is not None:
-            lr_scheduler.step()
-
         if verbose:
             print(
                 f"Epoch {epoch+1}/{epochs}"
-                f" | LR {current_lr:.2e}"
                 f" | Train Loss {train_loss:.4f}"
                 f" | Train Acc {train_acc:.4f}"
                 f" | Val Loss {val_loss:.4f}"

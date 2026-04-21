@@ -101,25 +101,24 @@ class OpenFaceDataset(Dataset):
     def __len__(self) -> int:
         return len(self.samples)
 
-    def _motion_mask(self, df: pd.DataFrame) -> np.ndarray:
+    def _motion_mask(self, seq: torch.Tensor) -> np.ndarray:
         """Compute a boolean keep-mask based on per-frame ``feature_diff`` motion scores.
 
-        Scores are the mean L1 difference of the 48 model feature columns between
+        Scores are the mean L1 difference of the normalized feature columns between
         consecutive frames. Frame 0 always receives score 0.0 and passes the lower
         bound (inclusive ``>=`` comparison).
 
         Args:
-            df: Confidence-filtered DataFrame containing the model feature columns.
+            seq: Normalized feature tensor of shape ``(T, D)``.
 
         Returns:
             Boolean ndarray of shape ``(T,)``; True = keep frame.
         """
-        T = len(df)
+        T = seq.shape[0]
         scores = np.zeros(T, dtype=np.float32)
 
         if self.motion_method == "feature_diff":
-            feats = df[self.feature_cols].values.astype(np.float32)  # (T, 48)
-            diff = np.abs(np.diff(feats, axis=0)).mean(axis=1)  # (T-1,)
+            diff = np.abs(np.diff(seq.numpy(), axis=0)).mean(axis=1)  # (T-1,)
             scores[1:] = diff
 
         return (scores >= self.motion_low) & (scores <= self.motion_high)
@@ -135,18 +134,25 @@ class OpenFaceDataset(Dataset):
         filtered = df[(df["success"] == 1) & (df["confidence"] >= self.min_confidence)]
         df = filtered if len(filtered) > 0 else df
 
-        # Optional motion-based frame filtering (after confidence filter).
-        # Fall back to post-confidence frames if the motion mask removes everything.
+        # Some raw OpenFace exports contain isolated NaNs in otherwise valid
+        # clips. Sanitize before normalization so one bad row does not poison
+        # the entire sequence statistics.
+        features = df[self.feature_cols].apply(pd.to_numeric, errors="coerce")
+        features = features.replace([np.inf, -np.inf], np.nan)
+        features = features.ffill().bfill().fillna(0.0)
+
+        seq = torch.tensor(features.values, dtype=torch.float32)
+
+        # Per-sample z-score normalization before motion filtering.
+        seq = (seq - seq.mean(dim=0, keepdim=True)) / seq.std(
+            dim=0, keepdim=True
+        ).clamp_min(1e-6)
+
+        # Optional motion-based frame filtering (after normalization).
         if self.motion_method != "none":
-            motion_filtered = df[self._motion_mask(df)]
-            df = motion_filtered if len(motion_filtered) > 0 else df
-
-        seq = torch.tensor(df[self.feature_cols].values, dtype=torch.float32)
-
-        # per-sample normalization
-        mean = seq.mean(dim=0, keepdim=True)
-        std = seq.std(dim=0, keepdim=True).clamp_min(1e-6)
-        seq = (seq - mean) / std
+            mask = self._motion_mask(seq)
+            if mask.any():
+                seq = seq[mask]
 
         if self.subsample_k > 1:
             seq = seq[:: self.subsample_k]
