@@ -113,7 +113,7 @@ class OpenSmileDataset(Dataset):
 
         # Per-sample z-score normalization before motion filtering.
         seq = (seq - seq.mean(dim=0, keepdim=True)) / seq.std(
-            dim=0, keepdim=True
+            dim=0, keepdim=True, correction=0
         ).clamp_min(1e-6)
 
         if self.motion_method != "none":
