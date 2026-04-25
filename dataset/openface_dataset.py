@@ -32,26 +32,44 @@ POSE_COLS: List[str] = [
 ]
 
 AU_R_COLS: List[str] = [
-    "AU01_r",
-    "AU02_r",
-    "AU04_r",
+    # "AU01_r",
+    # "AU02_r",
+    # "AU04_r",
     "AU05_r",
-    "AU06_r",
-    "AU07_r",
-    "AU09_r",
-    "AU10_r",
-    "AU12_r",
-    "AU14_r",
-    "AU15_r",
-    "AU17_r",
-    "AU20_r",
+    # "AU06_r",
+    # "AU07_r",
+    # "AU09_r",
+    # "AU10_r",
+    # "AU12_r",
+    # "AU14_r",
+    # "AU15_r",
+    # "AU17_r",
+    # "AU20_r",
     "AU23_r",
-    "AU25_r",
-    "AU26_r",
-    "AU45_r",
+    # "AU25_r",
+    # "AU26_r",
+    # "AU45_r",
 ]
 
-AU_C_COLS: List[str] = [col.replace("_r", "_c") for col in AU_R_COLS]
+AU_C_COLS: List[str] = [
+    # "AU01_r",
+    # "AU02_r",
+    # "AU04_r",
+    "AU05_r",
+    # "AU06_r",
+    # "AU07_r",
+    # "AU09_r",
+    # "AU10_r",
+    # "AU12_r",
+    # "AU14_r",
+    # "AU15_r",
+    # "AU17_r",
+    # "AU20_r",
+    "AU23_r",
+    # "AU25_r",
+    # "AU26_r",
+    # "AU45_r",
+]
 
 DEFAULT_FEATURE_COLS: List[str] = GAZE_COLS + POSE_COLS + AU_R_COLS + AU_C_COLS  # 48
 
