@@ -189,8 +189,13 @@ def evaluate_avt(
 ) -> None:
     mc = ckpt["model_config"]
     dc = ckpt["dataset_config"]
-    openface_root = root or dc["openface_root"]
-    audio_root = opensmile_root or dc["opensmile_root"]
+
+    # Infer active modalities from stored d_in values (None → disabled)
+    use_visual = mc.get("visual_d_in") is not None
+    use_audio = mc.get("audio_d_in") is not None
+
+    openface_root = (root or dc["openface_root"]) if use_visual else None
+    audio_root = (opensmile_root or dc["opensmile_root"]) if use_audio else None
     text_root = whisper_root or dc["whisper_root"]
 
     test_ds = MultimodalDatasetAVT(
@@ -222,8 +227,8 @@ def evaluate_avt(
         dropout=mc["dropout"],
         pooling=mc["pooling"],
         fusion_hidden=mc["fusion_hidden"],
-        use_visual=True,
-        use_audio=True,
+        use_visual=use_visual,
+        use_audio=use_audio,
         use_text=True,
     )
     model.load_state_dict(ckpt["model_state_dict"])
@@ -244,11 +249,20 @@ def evaluate_avt(
             text_len,
             y,
         ) in test_loader:
-            visual_x, visual_len = visual_x.to(device), visual_len.to(device)
-            audio_x, audio_len = audio_x.to(device), audio_len.to(device)
+            if visual_x is not None:
+                visual_x, visual_len = visual_x.to(device), visual_len.to(device)
+            if audio_x is not None:
+                audio_x, audio_len = audio_x.to(device), audio_len.to(device)
             text_x, text_len = text_x.to(device), text_len.to(device)
             y = y.to(device)
-            logits = model(visual_x, visual_len, audio_x, audio_len, text_x, text_len)
+            logits = model(
+                visual_x=visual_x,
+                visual_lengths=visual_len,
+                audio_x=audio_x,
+                audio_lengths=audio_len,
+                text_x=text_x,
+                text_lengths=text_len,
+            )
             total_loss += criterion(logits, y).item() * y.size(0)
             preds = (torch.sigmoid(logits) >= 0.5).float()
             total_correct += (preds == y).sum().item()
