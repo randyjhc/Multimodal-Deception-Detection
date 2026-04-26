@@ -80,6 +80,9 @@ class OpenFaceDataset(Dataset):
         filtered = df[(df["success"] == 1) & (df["confidence"] >= self.min_confidence)]
         df = filtered if len(filtered) > 0 else df
 
+        # Drop any remaining rows with NaN in feature columns.
+        df = df.dropna(subset=self.feature_cols)
+
         seq = torch.tensor(df[self.feature_cols].values, dtype=torch.float32)
         return seq, label
 
