@@ -275,6 +275,102 @@ def evaluate_avt(
     _print_metrics(total, total_loss / total, total_correct, all_preds, all_labels)
 
 
+def evaluate_pretrained_avt(
+    ckpt: dict,
+    clips_root: str | None,
+    audio_raw_root: str | None,
+    whisper_root: str | None,
+    device: torch.device,
+) -> None:
+    from dataset.pretrained_multimodal_dataset import (
+        PretrainedMultimodalDataset,
+        _pretrained_collate,
+    )
+    from model.pretrained_encoders import LoRAEncoderConfig
+    from model.pretrained_late_fusion import PretrainedLateFusionClassifier
+
+    mc = ckpt["model_config"]
+    dc = ckpt["dataset_config"]
+
+    _clips_root = (clips_root or dc.get("clips_root")) if mc["use_visual"] else None
+    _audio_root = (
+        (audio_raw_root or dc.get("audio_raw_root")) if mc["use_audio"] else None
+    )
+    _text_root = (whisper_root or dc.get("whisper_root")) if mc["use_text"] else None
+
+    test_ds = PretrainedMultimodalDataset(
+        clips_root=_clips_root,
+        audio_root=_audio_root,
+        whisper_root=_text_root,
+        split="Test",
+        num_frames=dc.get("num_video_frames", 16),
+        roberta_model_name=mc.get("text_model_name", "roberta-base"),
+        roberta_max_length=dc.get("roberta_max_length", 512),
+        max_audio_seconds=dc.get("max_audio_seconds", 60.0),
+    )
+    test_loader = DataLoader(
+        test_ds,
+        batch_size=4,
+        shuffle=False,
+        collate_fn=_pretrained_collate,
+        num_workers=0,
+    )
+
+    lora_cfg = LoRAEncoderConfig(
+        r=mc["lora_r"],
+        lora_alpha=mc["lora_alpha"],
+        lora_dropout=mc["lora_dropout"],
+    )
+    model = PretrainedLateFusionClassifier(
+        use_visual=mc["use_visual"],
+        use_audio=mc["use_audio"],
+        use_text=mc["use_text"],
+        video_model_name=mc.get("video_model_name", "MCG-NJU/videomae-base"),
+        audio_model_name=mc.get("audio_model_name", "facebook/wav2vec2-base-960h"),
+        text_model_name=mc.get("text_model_name", "roberta-base"),
+        lora_cfg=lora_cfg,
+        fusion_hidden=mc.get("fusion_hidden", 256),
+        dropout=mc.get("dropout", 0.3),
+        text_pool=mc.get("text_pool", "cls"),
+    )
+    model.load_state_dict(ckpt["model_state_dict"])
+    model.to(device).eval()
+
+    criterion = torch.nn.BCEWithLogitsLoss()
+    total_loss, total_correct, total = 0.0, 0, 0
+    all_preds: list[float] = []
+    all_labels: list[float] = []
+
+    with torch.no_grad():
+        for px, wf, wf_attn, ids, txt_attn, y in test_loader:
+            if px is not None:
+                px = px.to(device)
+            if wf is not None:
+                wf = wf.to(device)
+            if wf_attn is not None:
+                wf_attn = wf_attn.to(device)
+            if ids is not None:
+                ids = ids.to(device)
+            if txt_attn is not None:
+                txt_attn = txt_attn.to(device)
+            y = y.to(device)
+            logits = model(
+                pixel_values=px,
+                waveforms=wf,
+                audio_attention_mask=wf_attn,
+                input_ids=ids,
+                text_attention_mask=txt_attn,
+            )
+            total_loss += criterion(logits, y).item() * y.size(0)
+            preds = (torch.sigmoid(logits) >= 0.5).float()
+            total_correct += (preds == y).sum().item()
+            total += y.size(0)
+            all_preds.extend(preds.cpu().tolist())
+            all_labels.extend(y.cpu().tolist())
+
+    _print_metrics(total, total_loss / total, total_correct, all_preds, all_labels)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--ckpt", default="best_bigru.pt", help="Path to checkpoint")
@@ -290,6 +386,16 @@ if __name__ == "__main__":
         "--whisper_root",
         default=None,
         help="Override Whisper root for AVT checkpoints (default: from checkpoint)",
+    )
+    parser.add_argument(
+        "--clips_root",
+        default=None,
+        help="Override clips_raw root for pretrained_avt checkpoints (default: from checkpoint)",
+    )
+    parser.add_argument(
+        "--audio_raw_root",
+        default=None,
+        help="Override audio_raw root for pretrained_avt checkpoints (default: from checkpoint)",
     )
     parser.add_argument("--device", default="cuda")
     args = parser.parse_args()
@@ -309,7 +415,11 @@ if __name__ == "__main__":
         print(f"CV acc   : {ckpt['mean_val_acc']:.4f}  (avg epoch {ckpt['avg_epoch']})")
     print(f"Device   : {device}")
 
-    if model_type == "multimodal_avt":
+    if model_type == "pretrained_avt":
+        evaluate_pretrained_avt(
+            ckpt, args.clips_root, args.audio_raw_root, args.whisper_root, device
+        )
+    elif model_type == "multimodal_avt":
         evaluate_avt(ckpt, args.root, args.opensmile_root, args.whisper_root, device)
     elif model_type == "multimodal":
         evaluate_multimodal(ckpt, args.root, args.opensmile_root, device)

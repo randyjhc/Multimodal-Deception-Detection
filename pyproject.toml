@@ -7,6 +7,7 @@ requires-python = ">=3.12"
 dependencies = [
     "matplotlib>=3.10.8",
     "pandas>=3.0.1",
+    "peft>=0.10.0",
     "scikit-learn>=1.8.0",
     "torch>=2.10.0",
     "transformers>=4.40.0",
@@ -26,6 +27,11 @@ dataset = [
     "scipy>=1.17.1",
     "matplotlib>=3.9.0",
     "openai-whisper>=20240930",
+]
+pretrained = [
+    "av>=12.0.0",
+    "soundfile>=0.12.0",
+    "torchvision>=0.26.0",
 ]
 dev = [
     "mypy>=1.19.1",

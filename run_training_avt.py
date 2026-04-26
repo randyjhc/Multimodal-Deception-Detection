@@ -36,6 +36,7 @@ from dataset.multimodal_dataset import (
     opensmile_ur_lying_key,
 )
 from model.LateFusionBiGRU import LateFusionBiGRUClassifier
+from model.pretrained_late_fusion import PretrainedLateFusionClassifier
 
 
 # ---------------------------------------------------------------------------
@@ -76,6 +77,21 @@ class Config:
     # cross-validation
     use_cv: bool = False  # set True to run K-fold stratified CV instead of single split
     cv_folds: int = 5
+    # pretrained pipeline (VideoMAE / Wav2Vec2 / RoBERTa + LoRA)
+    use_pretrained: bool = False
+    clips_root: Optional[str] = "dataset/UR_LYING_Deception_Dataset/clips_raw"
+    audio_raw_root: Optional[str] = "dataset/UR_LYING_Deception_Dataset/audio_raw"
+    lora_r: int = 8
+    lora_alpha: int = 16
+    lora_dropout: float = 0.1
+    video_model_name: str = "MCG-NJU/videomae-base"
+    audio_model_name: str = "facebook/wav2vec2-base-960h"
+    text_model_name: str = "roberta-base"
+    num_video_frames: int = 16
+    max_audio_seconds: float = 60.0
+    fusion_hidden_pretrained: int = 256
+    text_pool: str = "cls"
+    lr_pretrained: float = 1e-4
 
     @classmethod
     def from_json(cls, path: str) -> "Config":
@@ -213,6 +229,553 @@ def _loader_kwargs(cfg: Config, *, seed: int | None = None) -> dict:
     return kwargs
 
 
+def _print_param_count(model: nn.Module) -> None:
+    """Print total and trainable parameter counts."""
+    total = sum(p.numel() for p in model.parameters())
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(
+        f"Parameters: {total:,} total | {trainable:,} trainable ({trainable / total * 100:.1f}%)\n"
+    )
+
+
+def _print_pretrained_param_count(model: "PretrainedLateFusionClassifier") -> None:
+    """Print total and trainable parameter counts broken down by encoder."""
+    for attr, name in [
+        ("visual_encoder", "VideoMAE"),
+        ("audio_encoder", "Wav2Vec2"),
+        ("text_encoder", "RoBERTa"),
+    ]:
+        enc = getattr(model, attr, None)
+        if enc is None:
+            continue
+        total = sum(p.numel() for p in enc.parameters())
+        trainable = sum(p.numel() for p in enc.parameters() if p.requires_grad)
+        print(
+            f"  {name:<14}: {total:>12,} total | {trainable:>10,} trainable"
+            f" ({trainable / total * 100:.1f}%)"
+        )
+    total_cls = sum(p.numel() for p in model.classifier.parameters())
+    print(
+        f"  {'Classifier':<14}: {total_cls:>12,} total | {total_cls:>10,} trainable (100.0%)"
+    )
+    total_all = sum(p.numel() for p in model.parameters())
+    trainable_all = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(
+        f"  {'TOTAL':<14}: {total_all:>12,} total | {trainable_all:>10,} trainable"
+        f" ({trainable_all / total_all * 100:.1f}%)\n"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Pretrained pipeline
+# ---------------------------------------------------------------------------
+
+
+def _run_pretrained_pipeline(cfg: Config, device: torch.device) -> None:
+    """Train / evaluate using the pretrained feature pipeline (VideoMAE + Wav2Vec2 + RoBERTa + LoRA)."""
+    from dataset.pretrained_multimodal_dataset import (
+        PretrainedMultimodalDataset,
+        _pretrained_collate,
+        make_pretrained_loaders,
+    )
+    from model.pretrained_encoders import LoRAEncoderConfig
+
+    lora_cfg = LoRAEncoderConfig(
+        r=cfg.lora_r,
+        lora_alpha=cfg.lora_alpha,
+        lora_dropout=cfg.lora_dropout,
+    )
+
+    use_visual = cfg.clips_root is not None
+    use_audio = cfg.audio_raw_root is not None
+    use_text = cfg.whisper_root is not None
+
+    def _make_pretrained_model() -> PretrainedLateFusionClassifier:
+        return PretrainedLateFusionClassifier(
+            use_visual=use_visual,
+            use_audio=use_audio,
+            use_text=use_text,
+            video_model_name=cfg.video_model_name,
+            audio_model_name=cfg.audio_model_name,
+            text_model_name=cfg.text_model_name,
+            lora_cfg=lora_cfg,
+            fusion_hidden=cfg.fusion_hidden_pretrained,
+            dropout=cfg.dropout,
+            text_pool=cfg.text_pool,
+        ).to(device)
+
+    ds_kwargs: dict = dict(
+        num_frames=cfg.num_video_frames,
+        video_processor_name=cfg.video_model_name,
+        roberta_model_name=cfg.text_model_name,
+        max_audio_seconds=cfg.max_audio_seconds,
+    )
+
+    def _pretrained_loader_kwargs(*, seed: int | None = None) -> dict:
+        kwargs: dict = dict(
+            batch_size=cfg.batch_size,
+            collate_fn=_pretrained_collate,
+            pin_memory=True,
+            num_workers=0,
+        )
+        if seed is not None:
+            kwargs["generator"] = torch.Generator().manual_seed(seed)
+        return kwargs
+
+    def _train_epoch(
+        loader: DataLoader,
+        model: nn.Module,
+        optimizer: optim.Optimizer,
+        criterion: nn.Module,
+    ) -> tuple[float, float]:
+        model.train()
+        total_loss, correct, total = 0.0, 0, 0
+        for px, wf, wf_attn, ids, txt_attn, y in tqdm(
+            loader, desc="Train", unit="batch", disable=not sys.stderr.isatty()
+        ):
+            if px is not None:
+                px = px.to(device)
+            if wf is not None:
+                wf = wf.to(device)
+            if wf_attn is not None:
+                wf_attn = wf_attn.to(device)
+            if ids is not None:
+                ids = ids.to(device)
+            if txt_attn is not None:
+                txt_attn = txt_attn.to(device)
+            y = y.to(device)
+
+            logits = model(
+                pixel_values=px,
+                waveforms=wf,
+                audio_attention_mask=wf_attn,
+                input_ids=ids,
+                text_attention_mask=txt_attn,
+            )
+            loss = criterion(logits, y)
+            optimizer.zero_grad()
+            loss.backward()
+            nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
+
+            total_loss += loss.item() * y.size(0)
+            correct += ((torch.sigmoid(logits) >= 0.5).float() == y).sum().item()
+            total += y.size(0)
+        return total_loss / total, correct / total
+
+    @torch.no_grad()
+    def _eval_epoch(
+        loader: DataLoader,
+        model: nn.Module,
+        criterion: nn.Module,
+        desc: str = "Val",
+    ) -> tuple[float, float]:
+        model.eval()
+        total_loss, correct, total = 0.0, 0, 0
+        for px, wf, wf_attn, ids, txt_attn, y in tqdm(
+            loader, desc=desc, unit="batch", disable=not sys.stderr.isatty()
+        ):
+            if px is not None:
+                px = px.to(device)
+            if wf is not None:
+                wf = wf.to(device)
+            if wf_attn is not None:
+                wf_attn = wf_attn.to(device)
+            if ids is not None:
+                ids = ids.to(device)
+            if txt_attn is not None:
+                txt_attn = txt_attn.to(device)
+            y = y.to(device)
+
+            logits = model(
+                pixel_values=px,
+                waveforms=wf,
+                audio_attention_mask=wf_attn,
+                input_ids=ids,
+                text_attention_mask=txt_attn,
+            )
+            loss = criterion(logits, y)
+            total_loss += loss.item() * y.size(0)
+            correct += ((torch.sigmoid(logits) >= 0.5).float() == y).sum().item()
+            total += y.size(0)
+        return total_loss / total, correct / total
+
+    def _save_ckpt(
+        model: PretrainedLateFusionClassifier,
+        extra: dict,
+    ) -> None:
+        torch.save(
+            {
+                "model_state_dict": model.state_dict(),
+                "model_type": "pretrained_avt",
+                "model_config": {
+                    "use_visual": use_visual,
+                    "use_audio": use_audio,
+                    "use_text": use_text,
+                    "video_model_name": cfg.video_model_name,
+                    "audio_model_name": cfg.audio_model_name,
+                    "text_model_name": cfg.text_model_name,
+                    "lora_r": cfg.lora_r,
+                    "lora_alpha": cfg.lora_alpha,
+                    "lora_dropout": cfg.lora_dropout,
+                    "fusion_hidden": cfg.fusion_hidden_pretrained,
+                    "dropout": cfg.dropout,
+                    "text_pool": cfg.text_pool,
+                },
+                "dataset_config": {
+                    "clips_root": cfg.clips_root,
+                    "audio_raw_root": cfg.audio_raw_root,
+                    "whisper_root": cfg.whisper_root,
+                    "num_video_frames": cfg.num_video_frames,
+                    "roberta_max_length": 512,
+                    "max_audio_seconds": cfg.max_audio_seconds,
+                },
+                **extra,
+            },
+            cfg.save_path,
+        )
+
+    # -----------------------------------------------------------------------
+    # Mode A: single train / val / test split
+    # -----------------------------------------------------------------------
+    if not cfg.use_cv:
+        train_loader, val_loader, test_loader = make_pretrained_loaders(
+            clips_root=cfg.clips_root,
+            audio_root=cfg.audio_raw_root,
+            whisper_root=cfg.whisper_root,
+            val_frac=0.2,
+            batch_size=cfg.batch_size,
+            seed=cfg.seed,
+            **ds_kwargs,
+        )
+        print(
+            f"Train: {len(train_loader.dataset)}"
+            f"  |  Val: {len(val_loader.dataset)}"
+            f"  |  Test: {len(test_loader.dataset)}\n"
+        )
+
+        model = _make_pretrained_model()
+        _print_pretrained_param_count(model)
+        criterion = nn.BCEWithLogitsLoss()
+        optimizer = optim.AdamW(
+            filter(lambda p: p.requires_grad, model.parameters()),
+            lr=cfg.lr_pretrained,
+            weight_decay=1e-4,
+        )
+        scheduler = (
+            optim.lr_scheduler.CosineAnnealingLR(
+                optimizer, T_max=cfg.epochs, eta_min=cfg.lr_pretrained * 0.01
+            )
+            if cfg.use_scheduler
+            else None
+        )
+
+        best_val_acc = 0.0
+        best_val_loss = float("inf")
+        no_improve = 0
+        train_losses, train_accs, val_losses, val_accs = [], [], [], []
+
+        print("Start training (pretrained)...\n")
+        for epoch in range(1, cfg.epochs + 1):
+            tr_loss, tr_acc = _train_epoch(train_loader, model, optimizer, criterion)
+            vl_loss, vl_acc = _eval_epoch(val_loader, model, criterion)
+            if isinstance(scheduler, optim.lr_scheduler.ReduceLROnPlateau):
+                scheduler.step(vl_loss)
+            elif scheduler is not None:
+                scheduler.step()
+
+            train_losses.append(tr_loss)
+            train_accs.append(tr_acc)
+            val_losses.append(vl_loss)
+            val_accs.append(vl_acc)
+
+            print(
+                f"  Epoch {epoch}/{cfg.epochs}"
+                f" | lr={optimizer.param_groups[0]['lr']:.2e}"
+                f" | train={tr_loss:.4f} acc={tr_acc:.4f}"
+                f" | val={vl_loss:.4f} acc={vl_acc:.4f}"
+            )
+
+            if vl_loss < best_val_loss:
+                best_val_acc = vl_acc
+                best_val_loss = vl_loss
+                no_improve = 0
+                _save_ckpt(
+                    model,
+                    {
+                        "best_val_acc": best_val_acc,
+                        "best_val_loss": best_val_loss,
+                        "epoch": epoch,
+                    },
+                )
+                print(
+                    f"  → saved best model, best_val_loss={best_val_loss:.4f},"
+                    f" best_val_acc={best_val_acc:.4f}\n"
+                )
+            else:
+                no_improve += 1
+                if no_improve >= cfg.patience:
+                    print(f"Early stopping at epoch {epoch}.\n")
+                    break
+
+        print(f"\nTraining finished. Best Val Acc = {best_val_acc:.4f}")
+        test_loss, test_acc = _eval_epoch(test_loader, model, criterion, desc="Test")
+        print(f"Test Loss {test_loss:.4f} | Test Acc {test_acc:.4f}")
+
+        for name, train_vals, val_vals, ylabel in [
+            ("loss_curve_pretrained.png", train_losses, val_losses, "Loss"),
+            ("accuracy_curve_pretrained.png", train_accs, val_accs, "Accuracy"),
+        ]:
+            plt.figure()
+            plt.plot(train_vals, label=f"Train {ylabel}")
+            plt.plot(val_vals, label=f"Val {ylabel}")
+            plt.xlabel("Epoch")
+            plt.ylabel(ylabel)
+            plt.title(f"Training and Validation {ylabel} (pretrained)")
+            plt.legend()
+            plt.grid()
+            plt.savefig(name, dpi=150, bbox_inches="tight")
+            plt.close()
+
+    # -----------------------------------------------------------------------
+    # Mode B: stratified K-fold cross-validation
+    # -----------------------------------------------------------------------
+    else:
+        base_ds = PretrainedMultimodalDataset(
+            cfg.clips_root, cfg.audio_raw_root, cfg.whisper_root, "Train", **ds_kwargs
+        )
+        labels = [lbl for _, _, _, lbl in base_ds.samples]
+
+        test_ds = PretrainedMultimodalDataset(
+            cfg.clips_root, cfg.audio_raw_root, cfg.whisper_root, "Test", **ds_kwargs
+        )
+        test_loader = DataLoader(
+            test_ds,
+            shuffle=False,
+            **_pretrained_loader_kwargs(seed=cfg.seed),
+        )
+
+        print(
+            f"Train: {len(base_ds)}  |  Test: {len(test_ds)}  |  folds: {cfg.cv_folds}\n"
+        )
+
+        skf = StratifiedKFold(n_splits=cfg.cv_folds, shuffle=True, random_state=42)
+        splits = list(skf.split(np.arange(len(base_ds)), labels))
+
+        fold_accs: list[float] = []
+        fold_best_epochs: list[int] = []
+
+        for fold, (train_idx, val_idx) in enumerate(splits, start=1):
+            print(f"{'=' * 55}")
+            print(
+                f"Fold {fold}/{cfg.cv_folds}  |  train={len(train_idx)}  val={len(val_idx)}"
+            )
+            print(f"{'=' * 55}")
+
+            fold_train_loader = DataLoader(
+                Subset(base_ds, train_idx),
+                shuffle=True,
+                **_pretrained_loader_kwargs(seed=cfg.seed + fold),
+            )
+            fold_val_loader = DataLoader(
+                Subset(base_ds, val_idx),
+                shuffle=False,
+                **_pretrained_loader_kwargs(seed=cfg.seed + cfg.cv_folds + fold),
+            )
+
+            fold_model = _make_pretrained_model()
+            _print_pretrained_param_count(fold_model)
+            fold_criterion = nn.BCEWithLogitsLoss()
+            fold_optimizer = optim.AdamW(
+                filter(lambda p: p.requires_grad, fold_model.parameters()),
+                lr=cfg.lr_pretrained,
+                weight_decay=1e-4,
+            )
+            fold_scheduler = (
+                optim.lr_scheduler.CosineAnnealingLR(
+                    fold_optimizer, T_max=cfg.epochs, eta_min=cfg.lr_pretrained * 0.01
+                )
+                if cfg.use_scheduler
+                else None
+            )
+
+            best_val_acc = 0.0
+            best_val_loss = float("inf")
+            best_epoch = 1
+            no_improve = 0
+
+            for epoch in range(1, cfg.epochs + 1):
+                tr_loss, tr_acc = _train_epoch(
+                    fold_train_loader, fold_model, fold_optimizer, fold_criterion
+                )
+                vl_loss, vl_acc = _eval_epoch(
+                    fold_val_loader, fold_model, fold_criterion
+                )
+                if fold_scheduler is not None:
+                    fold_scheduler.step()
+
+                print(
+                    f"  Epoch {epoch}/{cfg.epochs}"
+                    f" | lr={fold_optimizer.param_groups[0]['lr']:.2e}"
+                    f" | train={tr_loss:.4f} acc={tr_acc:.4f}"
+                    f" | val={vl_loss:.4f} acc={vl_acc:.4f}"
+                )
+
+                if vl_acc > best_val_acc:
+                    best_val_acc = vl_acc
+                    best_epoch = epoch
+
+                if vl_loss < best_val_loss:
+                    best_val_loss = vl_loss
+                    no_improve = 0
+                else:
+                    no_improve += 1
+                    if no_improve >= cfg.patience:
+                        print(f"  Early stopping at epoch {epoch}.\n")
+                        break
+
+            fold_accs.append(best_val_acc)
+            fold_best_epochs.append(best_epoch)
+            print(
+                f"  Fold {fold} best val acc: {best_val_acc:.4f}  (epoch {best_epoch})\n"
+            )
+
+        mean_acc = float(np.mean(fold_accs))
+        std_acc = float(np.std(fold_accs))
+        avg_epoch = int(np.ceil(np.mean(fold_best_epochs)))
+
+        print(f"{'=' * 55}")
+        print(f"CV Results ({cfg.cv_folds} folds):")
+        for i, acc in enumerate(fold_accs, 1):
+            print(f"  Fold {i}: {acc:.4f}")
+        print(f"  Mean val acc : {mean_acc:.4f} ± {std_acc:.4f}")
+        print(f"  Avg best epoch: {avg_epoch}")
+        print(f"{'=' * 55}\n")
+
+        print(
+            f"Training final pretrained model on all {len(base_ds)} train samples"
+            f" for {avg_epoch} epoch(s)...\n"
+        )
+
+        full_train_loader = DataLoader(
+            base_ds,
+            shuffle=True,
+            **_pretrained_loader_kwargs(seed=cfg.seed + 2 * cfg.cv_folds + 1),
+        )
+        model = _make_pretrained_model()
+        _print_pretrained_param_count(model)
+        criterion = nn.BCEWithLogitsLoss()
+        optimizer = optim.AdamW(
+            filter(lambda p: p.requires_grad, model.parameters()),
+            lr=cfg.lr_pretrained,
+            weight_decay=1e-4,
+        )
+        scheduler = (
+            optim.lr_scheduler.CosineAnnealingLR(
+                optimizer, T_max=avg_epoch, eta_min=cfg.lr_pretrained * 0.01
+            )
+            if cfg.use_scheduler
+            else None
+        )
+
+        final_train_losses: list[float] = []
+        final_train_accs: list[float] = []
+        for epoch in range(1, avg_epoch + 1):
+            tr_loss, tr_acc = _train_epoch(
+                full_train_loader, model, optimizer, criterion
+            )
+            if scheduler is not None:
+                scheduler.step()
+            final_train_losses.append(tr_loss)
+            final_train_accs.append(tr_acc)
+            print(
+                f"Epoch {epoch}/{avg_epoch} | lr={optimizer.param_groups[0]['lr']:.2e}"
+                f" | Train Loss {tr_loss:.4f} Acc {tr_acc:.4f}"
+            )
+
+        _save_ckpt(model, {"mean_val_acc": mean_acc, "avg_epoch": avg_epoch})
+        print(f"\nSaved final pretrained model → {cfg.save_path}")
+
+        # Test evaluation
+        print(f"\n{'=' * 55}")
+        print("Evaluating on test set...")
+        print(f"{'=' * 55}")
+        model.eval()
+        total_loss, total_correct, total = 0.0, 0, 0
+        all_preds: list[float] = []
+        all_labels_list: list[float] = []
+
+        with torch.no_grad():
+            for px, wf, wf_attn, ids, txt_attn, y in tqdm(
+                test_loader, desc="Test", unit="batch", disable=not sys.stderr.isatty()
+            ):
+                if px is not None:
+                    px = px.to(device)
+                if wf is not None:
+                    wf = wf.to(device)
+                if wf_attn is not None:
+                    wf_attn = wf_attn.to(device)
+                if ids is not None:
+                    ids = ids.to(device)
+                if txt_attn is not None:
+                    txt_attn = txt_attn.to(device)
+                y = y.to(device)
+
+                logits = model(
+                    pixel_values=px,
+                    waveforms=wf,
+                    audio_attention_mask=wf_attn,
+                    input_ids=ids,
+                    text_attention_mask=txt_attn,
+                )
+                loss = criterion(logits, y)
+                total_loss += loss.item() * y.size(0)
+                preds = (torch.sigmoid(logits) >= 0.5).float()
+                total_correct += (preds == y).sum().item()
+                total += y.size(0)
+                all_preds.extend(preds.cpu().tolist())
+                all_labels_list.extend(y.cpu().tolist())
+
+        acc = total_correct / total
+        avg_loss = total_loss / total
+        tp = sum(p == 1 and lbl == 1 for p, lbl in zip(all_preds, all_labels_list))
+        tn = sum(p == 0 and lbl == 0 for p, lbl in zip(all_preds, all_labels_list))
+        fp = sum(p == 1 and lbl == 0 for p, lbl in zip(all_preds, all_labels_list))
+        fn = sum(p == 0 and lbl == 1 for p, lbl in zip(all_preds, all_labels_list))
+        precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+        recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+        f1 = (
+            2 * precision * recall / (precision + recall)
+            if (precision + recall) > 0
+            else 0.0
+        )
+        print(f"\nTest samples : {total}")
+        print(f"Test loss    : {avg_loss:.4f}")
+        print(f"Test accuracy: {acc:.4f}  ({total_correct}/{total})")
+        print(f"Precision    : {precision:.4f}")
+        print(f"Recall       : {recall:.4f}")
+        print(f"F1 score     : {f1:.4f}")
+        print("\nConfusion matrix  (rows=actual, cols=predicted)")
+        print("              Pred-T  Pred-D")
+        print(f"  Actual-T :   {tn:4d}    {fp:4d}")
+        print(f"  Actual-D :   {fn:4d}    {tp:4d}")
+        print(f"{'=' * 55}")
+
+        for name, vals, ylabel in [
+            ("loss_curve_pretrained.png", final_train_losses, "Loss"),
+            ("accuracy_curve_pretrained.png", final_train_accs, "Accuracy"),
+        ]:
+            plt.figure()
+            plt.plot(vals, label=f"Train {ylabel}")
+            plt.xlabel("Epoch")
+            plt.ylabel(ylabel)
+            plt.title(f"Final Pretrained Model Training {ylabel} (CV mode)")
+            plt.legend()
+            plt.grid()
+            plt.savefig(name, dpi=150, bbox_inches="tight")
+            plt.close()
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -229,6 +792,10 @@ def main() -> None:
 
     seed_everything(cfg.seed)
     device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
+
+    if cfg.use_pretrained:
+        _run_pretrained_pipeline(cfg, device)
+        return
 
     ds_kwargs: dict = dict(
         visual_key_fn=openface_ur_lying_key,
@@ -269,6 +836,7 @@ def main() -> None:
         )
 
         model = _make_model(visual_d_in, audio_d_in, text_d_in, device, cfg)
+        _print_param_count(model)
         criterion = nn.BCEWithLogitsLoss()
         optimizer = optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=1e-4)
         if not cfg.use_scheduler:
@@ -445,6 +1013,7 @@ def main() -> None:
             )
 
             fold_model = _make_model(visual_d_in, audio_d_in, text_d_in, device, cfg)
+            _print_param_count(fold_model)
             fold_criterion = nn.BCEWithLogitsLoss()
             fold_optimizer = optim.AdamW(
                 fold_model.parameters(), lr=cfg.lr, weight_decay=1e-4
@@ -526,6 +1095,7 @@ def main() -> None:
             **_loader_kwargs(cfg, seed=cfg.seed + 2 * cfg.cv_folds + 1),
         )
         model = _make_model(visual_d_in, audio_d_in, text_d_in, device, cfg)
+        _print_param_count(model)
         criterion = nn.BCEWithLogitsLoss()
         optimizer = optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=1e-4)
         scheduler = (
