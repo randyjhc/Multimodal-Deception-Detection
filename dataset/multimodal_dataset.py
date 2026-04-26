@@ -301,7 +301,7 @@ class MultimodalDatasetAVT(Dataset):
         self,
         openface_root: Optional[str],
         opensmile_root: Optional[str],
-        whisper_root: str,
+        whisper_root: Optional[str],
         split: str = "Train",
         visual_feature_cols: Optional[List[str]] = None,
         audio_feature_cols: Optional[List[str]] = None,
@@ -364,17 +364,21 @@ class MultimodalDatasetAVT(Dataset):
             self._audio_loader = None
             self._audio_path_to_idx = None
 
-        # Text loader (WhisperDataset; key_fn passed through)
-        self._text_loader = WhisperDataset(
-            whisper_root,
-            split,
-            model_name=roberta_model,
-            max_length=roberta_max_length,
-            key_fn=_tkey,
-        )
-        self._text_path_to_idx: Dict[Path, int] = {
-            p: i for i, (p, _) in enumerate(self._text_loader.samples)
-        }
+        # Text loader (optional)
+        if whisper_root is not None:
+            self._text_loader: Optional[WhisperDataset] = WhisperDataset(
+                whisper_root,
+                split,
+                model_name=roberta_model,
+                max_length=roberta_max_length,
+                key_fn=_tkey,
+            )
+            self._text_path_to_idx: Optional[Dict[Path, int]] = {
+                p: i for i, (p, _) in enumerate(self._text_loader.samples)
+            }
+        else:
+            self._text_loader = None
+            self._text_path_to_idx = None
 
         # Build canonical_key → (path, label) maps
         visual_map = (
@@ -387,18 +391,20 @@ class MultimodalDatasetAVT(Dataset):
             if opensmile_root is not None
             else {}
         )
-        text_map = _build_stem_map(
-            Path(whisper_root) / split,
-            _tkey,
-            glob="*.txt",
+        text_map = (
+            _build_stem_map(Path(whisper_root) / split, _tkey, glob="*.txt")
+            if whisper_root is not None
+            else {}
         )
 
         # Warn about unmatched keys across active modalities
-        active_maps = [("Whisper", text_map)]
+        active_maps: List[Tuple[str, Dict[str, Tuple[Path, int]]]] = []
         if openface_root is not None:
             active_maps.append(("OpenFace", visual_map))
         if opensmile_root is not None:
             active_maps.append(("OpenSMILE", audio_map))
+        if whisper_root is not None:
+            active_maps.append(("Whisper", text_map))
         all_keys = set().union(*(m for _, m in active_maps))
         for name, mod_map in active_maps:
             missing = all_keys - set(mod_map)
@@ -408,24 +414,25 @@ class MultimodalDatasetAVT(Dataset):
                     f"{name} in split='{split}': {sorted(missing)}"
                 )
 
-        # Inner join: always require text; require visual/audio only when enabled
-        common_keys_set: set[str] = set(text_map)
-        if openface_root is not None:
-            common_keys_set &= set(visual_map)
-        if opensmile_root is not None:
-            common_keys_set &= set(audio_map)
+        # Inner join over enabled modalities
+        nonempty_maps = [m for m in [visual_map, audio_map, text_map] if m]
+        if not nonempty_maps:
+            raise ValueError(
+                "At least one of openface_root, opensmile_root, whisper_root must be set."
+            )
+        common_keys_set: set[str] = set(nonempty_maps[0])
+        for m in nonempty_maps[1:]:
+            common_keys_set &= set(m)
         common_keys = sorted(common_keys_set)
 
-        label_map = (
-            visual_map
-            if openface_root is not None
-            else (audio_map if opensmile_root is not None else text_map)
-        )
-        self.samples: List[Tuple[Optional[Path], Optional[Path], Path, int]] = [
+        label_map = nonempty_maps[0]
+        self.samples: List[
+            Tuple[Optional[Path], Optional[Path], Optional[Path], int]
+        ] = [
             (
                 visual_map[k][0] if openface_root is not None else None,
                 audio_map[k][0] if opensmile_root is not None else None,
-                text_map[k][0],
+                text_map[k][0] if whisper_root is not None else None,
                 label_map[k][1],
             )
             for k in common_keys
@@ -436,7 +443,9 @@ class MultimodalDatasetAVT(Dataset):
 
     def __getitem__(
         self, idx: int
-    ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], torch.Tensor, int]:
+    ) -> Tuple[
+        Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor], int
+    ]:
         visual_path, audio_path, text_path, label = self.samples[idx]
 
         visual_seq: Optional[torch.Tensor] = None
@@ -455,7 +464,13 @@ class MultimodalDatasetAVT(Dataset):
         ):
             audio_seq, _ = self._audio_loader[self._audio_path_to_idx[audio_path]]
 
-        text_seq, _ = self._text_loader[self._text_path_to_idx[text_path]]
+        text_seq: Optional[torch.Tensor] = None
+        if (
+            text_path is not None
+            and self._text_loader is not None
+            and self._text_path_to_idx is not None
+        ):
+            text_seq, _ = self._text_loader[self._text_path_to_idx[text_path]]
 
         return visual_seq, audio_seq, text_seq, label
 
@@ -470,8 +485,8 @@ class MultimodalDatasetAVT(Dataset):
         return len(self.audio_feature_cols) if self._audio_loader is not None else None
 
     @property
-    def text_d_in(self) -> int:
-        return self._text_loader.d_in
+    def text_d_in(self) -> Optional[int]:
+        return self._text_loader.d_in if self._text_loader is not None else None
 
 
 def _avt_collate(
@@ -517,8 +532,14 @@ def _avt_collate(
     else:
         audio_x = None
         audio_lengths = None
-    text_lengths = torch.tensor([t.shape[0] for t in text_seqs], dtype=torch.long)
-    text_x = pad_sequence(list(text_seqs), batch_first=True)
+    if text_seqs[0] is not None:
+        text_lengths: Optional[torch.Tensor] = torch.tensor(
+            [t.shape[0] for t in text_seqs], dtype=torch.long
+        )
+        text_x: Optional[torch.Tensor] = pad_sequence(list(text_seqs), batch_first=True)
+    else:
+        text_x = None
+        text_lengths = None
     y = torch.tensor(ys, dtype=torch.float32)
     return visual_x, visual_lengths, audio_x, audio_lengths, text_x, text_lengths, y
 
@@ -526,7 +547,7 @@ def _avt_collate(
 def make_avt_loaders(
     openface_root: Optional[str],
     opensmile_root: Optional[str],
-    whisper_root: str,
+    whisper_root: Optional[str],
     val_frac: float = 0.2,
     batch_size: int = 16,
     num_workers: int = 0,
@@ -547,12 +568,13 @@ def make_avt_loaders(
     visual_motion_high: float = float("inf"),
     roberta_model: str = "roberta-base",
     roberta_max_length: int = 512,
-) -> Tuple[DataLoader, DataLoader, DataLoader, Optional[int], Optional[int], int]:
-    """Build train, val, and test DataLoaders with visual + audio + text features.
+) -> Tuple[
+    DataLoader, DataLoader, DataLoader, Optional[int], Optional[int], Optional[int]
+]:
+    """Build train, val, and test DataLoaders for any subset of modalities.
 
-    Pass ``openface_root=None`` to disable visual or ``opensmile_root=None`` to
-    disable audio.  The returned ``visual_d_in`` / ``audio_d_in`` will be ``None``
-    for disabled modalities.
+    Pass ``None`` for any root to disable that modality. The returned d_in values
+    will be ``None`` for disabled modalities. At least one root must be non-None.
 
     Returns:
         train_loader, val_loader, test_loader, visual_d_in, audio_d_in, text_d_in

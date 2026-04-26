@@ -193,10 +193,11 @@ def evaluate_avt(
     # Infer active modalities from stored d_in values (None → disabled)
     use_visual = mc.get("visual_d_in") is not None
     use_audio = mc.get("audio_d_in") is not None
+    use_text = mc.get("text_d_in") is not None
 
     openface_root = (root or dc["openface_root"]) if use_visual else None
     audio_root = (opensmile_root or dc["opensmile_root"]) if use_audio else None
-    text_root = whisper_root or dc["whisper_root"]
+    text_root = (whisper_root or dc["whisper_root"]) if use_text else None
 
     test_ds = MultimodalDatasetAVT(
         openface_root,
@@ -229,7 +230,7 @@ def evaluate_avt(
         fusion_hidden=mc["fusion_hidden"],
         use_visual=use_visual,
         use_audio=use_audio,
-        use_text=True,
+        use_text=use_text,
     )
     model.load_state_dict(ckpt["model_state_dict"])
     model.to(device).eval()
@@ -253,7 +254,8 @@ def evaluate_avt(
                 visual_x, visual_len = visual_x.to(device), visual_len.to(device)
             if audio_x is not None:
                 audio_x, audio_len = audio_x.to(device), audio_len.to(device)
-            text_x, text_len = text_x.to(device), text_len.to(device)
+            if text_x is not None:
+                text_x, text_len = text_x.to(device), text_len.to(device)
             y = y.to(device)
             logits = model(
                 visual_x=visual_x,

@@ -46,7 +46,7 @@ class Config:
     # paths (set to None to disable that modality)
     openface_root: Optional[str] = "dataset/UR_LYING_Deception_Dataset/openface_raw"
     opensmile_root: Optional[str] = "dataset/UR_LYING_Deception_Dataset/opensmile_raw"
-    whisper_root: str = "dataset/UR_LYING_Deception_Dataset/whisper_raw"
+    whisper_root: Optional[str] = "dataset/UR_LYING_Deception_Dataset/whisper_raw"
     # training
     batch_size: int = 16
     epochs: int = 30
@@ -120,7 +120,8 @@ def train_one_epoch(
             visual_x, visual_len = visual_x.to(device), visual_len.to(device)
         if audio_x is not None:
             audio_x, audio_len = audio_x.to(device), audio_len.to(device)
-        text_x, text_len = text_x.to(device), text_len.to(device)
+        if text_x is not None:
+            text_x, text_len = text_x.to(device), text_len.to(device)
         y = y.to(device)
 
         logits = model(
@@ -161,7 +162,8 @@ def eval_one_epoch(
             visual_x, visual_len = visual_x.to(device), visual_len.to(device)
         if audio_x is not None:
             audio_x, audio_len = audio_x.to(device), audio_len.to(device)
-        text_x, text_len = text_x.to(device), text_len.to(device)
+        if text_x is not None:
+            text_x, text_len = text_x.to(device), text_len.to(device)
         y = y.to(device)
 
         logits = model(
@@ -183,7 +185,7 @@ def eval_one_epoch(
 def _make_model(
     visual_d_in: Optional[int],
     audio_d_in: Optional[int],
-    text_d_in: int,
+    text_d_in: Optional[int],
     device: torch.device,
     cfg: Config,
 ) -> LateFusionBiGRUClassifier:
@@ -198,7 +200,7 @@ def _make_model(
         fusion_hidden=cfg.fusion_hidden,
         use_visual=visual_d_in is not None,
         use_audio=audio_d_in is not None,
-        use_text=True,
+        use_text=text_d_in is not None,
     ).to(device)
 
 
@@ -334,6 +336,7 @@ def main() -> None:
                             "fusion_hidden": cfg.fusion_hidden,
                             "use_visual": visual_d_in is not None,
                             "use_audio": audio_d_in is not None,
+                            "use_text": text_d_in is not None,
                         },
                         "dataset_config": {
                             "openface_root": cfg.openface_root,
@@ -565,6 +568,7 @@ def main() -> None:
                     "fusion_hidden": cfg.fusion_hidden,
                     "use_visual": visual_d_in is not None,
                     "use_audio": audio_d_in is not None,
+                    "use_text": text_d_in is not None,
                 },
                 "dataset_config": {
                     "openface_root": cfg.openface_root,
@@ -602,7 +606,8 @@ def main() -> None:
                     visual_x, visual_len = visual_x.to(device), visual_len.to(device)
                 if audio_x is not None:
                     audio_x, audio_len = audio_x.to(device), audio_len.to(device)
-                text_x, text_len = text_x.to(device), text_len.to(device)
+                if text_x is not None:
+                    text_x, text_len = text_x.to(device), text_len.to(device)
                 y = y.to(device)
 
                 logits = model(
