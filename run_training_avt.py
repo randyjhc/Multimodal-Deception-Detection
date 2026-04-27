@@ -88,6 +88,9 @@ class Config:
     audio_model_name: str = "facebook/wav2vec2-base-960h"
     text_model_name: str = "roberta-base"
     num_video_frames: int = 16
+    video_stride: Optional[int] = (
+        None  # None → equals num_video_frames (non-overlapping)
+    )
     max_audio_seconds: float = 60.0
     fusion_hidden_pretrained: int = 256
     text_pool: str = "cls"
@@ -306,6 +309,7 @@ def _run_pretrained_pipeline(cfg: Config, device: torch.device) -> None:
 
     ds_kwargs: dict = dict(
         num_frames=cfg.num_video_frames,
+        video_stride=cfg.video_stride,
         video_processor_name=cfg.video_model_name,
         roberta_model_name=cfg.text_model_name,
         max_audio_seconds=cfg.max_audio_seconds,
@@ -330,7 +334,7 @@ def _run_pretrained_pipeline(cfg: Config, device: torch.device) -> None:
     ) -> tuple[float, float]:
         model.train()
         total_loss, correct, total = 0.0, 0, 0
-        for px, wf, wf_attn, ids, txt_attn, y in tqdm(
+        for px, wf, wf_attn, ids, txt_attn, vl, y in tqdm(
             loader, desc="Train", unit="batch", disable=not sys.stderr.isatty()
         ):
             if px is not None:
@@ -343,6 +347,8 @@ def _run_pretrained_pipeline(cfg: Config, device: torch.device) -> None:
                 ids = ids.to(device)
             if txt_attn is not None:
                 txt_attn = txt_attn.to(device)
+            if vl is not None:
+                vl = vl.to(device)
             y = y.to(device)
 
             logits = model(
@@ -351,6 +357,7 @@ def _run_pretrained_pipeline(cfg: Config, device: torch.device) -> None:
                 audio_attention_mask=wf_attn,
                 input_ids=ids,
                 text_attention_mask=txt_attn,
+                video_lengths=vl,
             )
             loss = criterion(logits, y)
             optimizer.zero_grad()
@@ -372,7 +379,7 @@ def _run_pretrained_pipeline(cfg: Config, device: torch.device) -> None:
     ) -> tuple[float, float]:
         model.eval()
         total_loss, correct, total = 0.0, 0, 0
-        for px, wf, wf_attn, ids, txt_attn, y in tqdm(
+        for px, wf, wf_attn, ids, txt_attn, vl, y in tqdm(
             loader, desc=desc, unit="batch", disable=not sys.stderr.isatty()
         ):
             if px is not None:
@@ -385,6 +392,8 @@ def _run_pretrained_pipeline(cfg: Config, device: torch.device) -> None:
                 ids = ids.to(device)
             if txt_attn is not None:
                 txt_attn = txt_attn.to(device)
+            if vl is not None:
+                vl = vl.to(device)
             y = y.to(device)
 
             logits = model(
@@ -393,6 +402,7 @@ def _run_pretrained_pipeline(cfg: Config, device: torch.device) -> None:
                 audio_attention_mask=wf_attn,
                 input_ids=ids,
                 text_attention_mask=txt_attn,
+                video_lengths=vl,
             )
             loss = criterion(logits, y)
             total_loss += loss.item() * y.size(0)
@@ -706,7 +716,7 @@ def _run_pretrained_pipeline(cfg: Config, device: torch.device) -> None:
         all_labels_list: list[float] = []
 
         with torch.no_grad():
-            for px, wf, wf_attn, ids, txt_attn, y in tqdm(
+            for px, wf, wf_attn, ids, txt_attn, vl, y in tqdm(
                 test_loader, desc="Test", unit="batch", disable=not sys.stderr.isatty()
             ):
                 if px is not None:
@@ -719,6 +729,8 @@ def _run_pretrained_pipeline(cfg: Config, device: torch.device) -> None:
                     ids = ids.to(device)
                 if txt_attn is not None:
                     txt_attn = txt_attn.to(device)
+                if vl is not None:
+                    vl = vl.to(device)
                 y = y.to(device)
 
                 logits = model(
@@ -727,6 +739,7 @@ def _run_pretrained_pipeline(cfg: Config, device: torch.device) -> None:
                     audio_attention_mask=wf_attn,
                     input_ids=ids,
                     text_attention_mask=txt_attn,
+                    video_lengths=vl,
                 )
                 loss = criterion(logits, y)
                 total_loss += loss.item() * y.size(0)

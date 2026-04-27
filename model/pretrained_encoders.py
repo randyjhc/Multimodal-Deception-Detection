@@ -72,6 +72,10 @@ class VideoMAEEncoder(nn.Module):
 
         backbone = VideoMAEModel.from_pretrained(model_name)
 
+        cfg = backbone.config
+        self._t_steps: int = cfg.num_frames // cfg.tubelet_size
+        self._n_spatial: int = (cfg.image_size // cfg.patch_size) ** 2
+
         if lora_cfg is not None:
             try:
                 from peft import LoraConfig, get_peft_model  # type: ignore[import-untyped]
@@ -92,19 +96,50 @@ class VideoMAEEncoder(nn.Module):
             for p in self.backbone.parameters():
                 p.requires_grad_(False)
 
-    def forward(self, pixel_values: torch.Tensor) -> torch.Tensor:
-        """Encode a batch of video clips.
+    def forward(
+        self, pixel_values: torch.Tensor, return_sequence: bool = False
+    ) -> torch.Tensor:
+        """Encode a batch of video clips using sliding-window mode.
 
         Args:
-            pixel_values: ``(B, T, C, H, W)`` float32 tensor — preprocessed
-                          frames in VideoMAE format (T=16, C=3, H=W=224).
+            pixel_values:    Either:
+
+                             * ``(B, N, T, C, H, W)`` — sliding-window input
+                               where N is the number of 16-frame windows.
+                             * ``(B, T, C, H, W)`` — legacy single-window input.
+
+                             T=16, C=3, H=W=224.
+            return_sequence: When ``True`` return ``(B, N_windows, 768)``
+                             (one vector per window) instead of the
+                             mean-pooled ``(B, 768)`` vector.
 
         Returns:
-            ``(B, 768)`` float32 feature vector (mean pool of patch tokens).
+            ``(B, 768)`` pooled vector, or ``(B, N_windows, 768)`` if
+            ``return_sequence=True``.
         """
-        outputs = self.backbone(pixel_values=pixel_values)
-        # last_hidden_state: (B, num_patches, 768)
-        return outputs.last_hidden_state.mean(dim=1)
+        if pixel_values.ndim == 6:
+            # Sliding-window path: (B, N, T, C, H, W)
+            B, N, T, C, H, W = pixel_values.shape
+            flat = pixel_values.view(B * N, T, C, H, W)
+            outputs = self.backbone(pixel_values=flat)
+            seq = outputs.last_hidden_state  # (B*N, T_steps*N_spatial, d)
+            d = seq.shape[-1]
+            # Spatial mean-pool within each temporal step
+            seq = seq.view(B * N, self._t_steps, self._n_spatial, d).mean(dim=2)
+            # Mean-pool temporal steps → one vector per window
+            window_embs = seq.mean(dim=1).view(B, N, d)  # (B, N, d)
+            if return_sequence:
+                return window_embs
+            return window_embs.mean(dim=1)  # (B, d)
+        else:
+            # Legacy single-window path: (B, T, C, H, W)
+            outputs = self.backbone(pixel_values=pixel_values)
+            seq = outputs.last_hidden_state  # (B, T_steps*N_spatial, d)
+            B2, _, d = seq.shape
+            seq = seq.view(B2, self._t_steps, self._n_spatial, d).mean(dim=2)
+            if return_sequence:
+                return seq  # (B, T_steps, d)
+            return seq.mean(dim=1)  # (B, d)
 
 
 # ---------------------------------------------------------------------------
@@ -158,22 +193,28 @@ class Wav2Vec2Encoder(nn.Module):
         self,
         waveforms: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
+        return_sequence: bool = False,
     ) -> torch.Tensor:
         """Encode a batch of raw audio waveforms.
 
         Args:
-            waveforms:      ``(B, T_audio)`` float32 tensor — raw 16 kHz PCM.
-            attention_mask: ``(B, T_audio)`` long tensor — 1 for real samples,
-                            0 for padding.  May be ``None`` for same-length inputs.
+            waveforms:       ``(B, T_audio)`` float32 tensor — raw 16 kHz PCM.
+            attention_mask:  ``(B, T_audio)`` long tensor — 1 for real samples,
+                             0 for padding.  May be ``None`` for same-length inputs.
+            return_sequence: When ``True`` return ``(B, T_frames, 768)``
+                             instead of the mean-pooled ``(B, 768)`` vector.
 
         Returns:
-            ``(B, 768)`` float32 feature vector (mean pool of frame hidden states).
+            ``(B, 768)`` pooled vector, or ``(B, T_frames, 768)`` if
+            ``return_sequence=True``.
         """
         outputs = self.backbone(
             input_values=waveforms,
             attention_mask=attention_mask,
         )
         # last_hidden_state: (B, T_frames, 768)
+        if return_sequence:
+            return outputs.last_hidden_state
         return outputs.last_hidden_state.mean(dim=1)
 
 
@@ -235,19 +276,25 @@ class RoBERTaEncoder(nn.Module):
         self,
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor,
+        return_sequence: bool = False,
     ) -> torch.Tensor:
         """Encode a batch of tokenized text sequences.
 
         Args:
-            input_ids:      ``(B, L)`` long tensor — RoBERTa token IDs.
-            attention_mask: ``(B, L)`` long tensor — 1 for real tokens, 0 for padding.
+            input_ids:       ``(B, L)`` long tensor — RoBERTa token IDs.
+            attention_mask:  ``(B, L)`` long tensor — 1 for real tokens, 0 for padding.
+            return_sequence: When ``True`` return ``(B, L, 768)`` instead of
+                             the pooled ``(B, 768)`` vector.
 
         Returns:
-            ``(B, 768)`` float32 feature vector.
+            ``(B, 768)`` pooled vector, or ``(B, L, 768)`` if
+            ``return_sequence=True``.
         """
         outputs = self.backbone(input_ids=input_ids, attention_mask=attention_mask)
         # last_hidden_state: (B, L, 768)
         hidden = outputs.last_hidden_state
+        if return_sequence:
+            return hidden
         if self.pool == "cls":
             return hidden[:, 0, :]
         # mean pool over real tokens

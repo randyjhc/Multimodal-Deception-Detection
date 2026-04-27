@@ -342,7 +342,7 @@ def evaluate_pretrained_avt(
     all_labels: list[float] = []
 
     with torch.no_grad():
-        for px, wf, wf_attn, ids, txt_attn, y in test_loader:
+        for px, wf, wf_attn, ids, txt_attn, vl, y in test_loader:
             if px is not None:
                 px = px.to(device)
             if wf is not None:
@@ -353,6 +353,8 @@ def evaluate_pretrained_avt(
                 ids = ids.to(device)
             if txt_attn is not None:
                 txt_attn = txt_attn.to(device)
+            if vl is not None:
+                vl = vl.to(device)
             y = y.to(device)
             logits = model(
                 pixel_values=px,
@@ -360,6 +362,7 @@ def evaluate_pretrained_avt(
                 audio_attention_mask=wf_attn,
                 input_ids=ids,
                 text_attention_mask=txt_attn,
+                video_lengths=vl,
             )
             total_loss += criterion(logits, y).item() * y.size(0)
             preds = (torch.sigmoid(logits) >= 0.5).float()

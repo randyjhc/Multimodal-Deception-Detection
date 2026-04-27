@@ -96,6 +96,7 @@ class PretrainedMultimodalDataset(Dataset):
         whisper_root: Optional[str],
         split: str = "Train",
         num_frames: int = 16,
+        video_stride: Optional[int] = None,
         video_processor_name: str = "MCG-NJU/videomae-base",
         roberta_model_name: str = "roberta-base",
         roberta_max_length: int = 512,
@@ -118,6 +119,7 @@ class PretrainedMultimodalDataset(Dataset):
                 clips_root,
                 split,
                 num_frames=num_frames,
+                stride=video_stride,
                 processor_name=video_processor_name,
                 key_fn=openface_ur_lying_key,
             )
@@ -285,16 +287,18 @@ class PretrainedMultimodalDataset(Dataset):
 def _pretrained_collate(
     batch: list,
 ) -> Tuple[
-    Optional[torch.Tensor],  # pixel_values  (B, T, 3, H, W)
+    Optional[torch.Tensor],  # pixel_values  (B, N_max, T, 3, H, W)
     Optional[torch.Tensor],  # waveforms     (B, T_max)
     Optional[torch.Tensor],  # audio_attn    (B, T_max)
     Optional[torch.Tensor],  # input_ids     (B, L)
     Optional[torch.Tensor],  # text_attn     (B, L)
+    Optional[torch.Tensor],  # video_lengths (B,)  — actual N_windows per sample
     torch.Tensor,  # y             (B,)
 ]:
     """Collate a list of ``PretrainedMultimodalDataset`` samples into a batch.
 
-    * ``pixel_values``: stacked (fixed size) → ``(B, T, 3, H, W)``
+    * ``pixel_values``: padded to ``N_max`` windows → ``(B, N_max, T, 3, H, W)``
+    * ``video_lengths``: ``(B,)`` long tensor with actual N_windows per sample.
     * ``waveforms``   : right-padded to ``T_max`` → ``(B, T_max)``; matching
                         ``audio_attn`` mask computed from original lengths.
     * ``input_ids``   : already padded to ``max_length`` by the tokenizer → stacked.
@@ -302,10 +306,21 @@ def _pretrained_collate(
     """
     pixel_values_list, waveform_list, input_ids_list, attn_mask_list, ys = zip(*batch)
 
-    # --- pixel_values (fixed size: stack directly) ---
+    # --- pixel_values (variable N_windows: pad to N_max) ---
     pixel_values: Optional[torch.Tensor] = None
+    video_lengths: Optional[torch.Tensor] = None
     if pixel_values_list[0] is not None:
-        pixel_values = torch.stack(list(pixel_values_list))
+        video_lengths = torch.tensor(
+            [pv.shape[0] for pv in pixel_values_list], dtype=torch.long
+        )
+        N_max = int(video_lengths.max().item())
+        padded = []
+        for pv in pixel_values_list:
+            pad_n = N_max - pv.shape[0]
+            if pad_n > 0:
+                pv = torch.cat([pv, pv.new_zeros(pad_n, *pv.shape[1:])], dim=0)
+            padded.append(pv)
+        pixel_values = torch.stack(padded)  # (B, N_max, T, 3, H, W)
 
     # --- waveforms (variable length: pad + mask) ---
     waveforms: Optional[torch.Tensor] = None
@@ -324,7 +339,7 @@ def _pretrained_collate(
         text_attn = torch.stack(list(attn_mask_list))
 
     y = torch.tensor(ys, dtype=torch.float32)
-    return pixel_values, waveforms, audio_attn, input_ids, text_attn, y
+    return pixel_values, waveforms, audio_attn, input_ids, text_attn, video_lengths, y
 
 
 # ---------------------------------------------------------------------------
@@ -340,6 +355,7 @@ def make_pretrained_loaders(
     batch_size: int = 4,
     seed: int = 42,
     num_frames: int = 16,
+    video_stride: Optional[int] = None,
     video_processor_name: str = "MCG-NJU/videomae-base",
     roberta_model_name: str = "roberta-base",
     roberta_max_length: int = 512,
@@ -356,6 +372,7 @@ def make_pretrained_loaders(
     """
     ds_kwargs: dict = dict(
         num_frames=num_frames,
+        video_stride=video_stride,
         video_processor_name=video_processor_name,
         roberta_model_name=roberta_model_name,
         roberta_max_length=roberta_max_length,

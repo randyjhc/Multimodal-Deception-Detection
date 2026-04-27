@@ -131,6 +131,9 @@ class WhisperDataset(Dataset):
         # Strip leading <s> and trailing </s> special tokens
         if hidden.shape[0] >= 2:
             hidden = hidden[1:-1]
+        if hidden.shape[0] == 0:
+            # Empty transcript: keep CLS token as fallback
+            hidden = outputs.last_hidden_state.squeeze(0)[[0]]
 
         hidden = hidden.float().cpu()
         self._cache[idx] = hidden

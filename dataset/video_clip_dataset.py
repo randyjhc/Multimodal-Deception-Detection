@@ -1,8 +1,8 @@
 """PyTorch Dataset for raw MP4 video clips (VideoMAE input).
 
-Each sample's video is decoded with PyAV, num_frames evenly-spaced frames are
-sampled, and the frames are preprocessed with VideoMAEImageProcessor into a
-float32 pixel_values tensor ready for a VideoMAE model.
+Each sample's video is decoded with PyAV, split into non-overlapping windows of
+``num_frames`` frames each, and each window is preprocessed with
+``VideoMAEImageProcessor`` into a float32 pixel_values tensor ready for VideoMAE.
 
 Directory layout expected::
 
@@ -18,7 +18,7 @@ Usage::
         split="Train",
         key_fn=openface_ur_lying_key,
     )
-    pixel_values, label = ds[0]   # pixel_values: (T, 3, 224, 224), label: 0 or 1
+    pixel_values, label = ds[0]   # pixel_values: (N_windows, T, 3, 224, 224), label: 0 or 1
 """
 
 from pathlib import Path
@@ -30,24 +30,27 @@ from torch.utils.data import Dataset
 
 
 class VideoClipDataset(Dataset):
-    """Dataset that reads MP4 clips, samples frames, and returns pixel_values.
+    """Dataset that reads MP4 clips and returns non-overlapping sliding windows.
 
     Each ``__getitem__`` returns ``(pixel_values, label)`` where:
 
-    * ``pixel_values`` : float32 tensor ``(T, 3, H, W)`` — preprocessed frames
-      in VideoMAE format (T = num_frames, H = W = 224 by default).
+    * ``pixel_values`` : float32 tensor ``(N_windows, T, 3, H, W)`` — per-window
+      preprocessed frames in VideoMAE format (T = num_frames, H = W = 224).
     * ``label``        : int, 0 (Truthful) or 1 (Deceptive).
 
-    The returned tensor has shape ``(num_frames, 3, H, W)`` (T-first), which
-    matches what ``VideoMAEImageProcessor`` produces.  The collate function in
-    ``pretrained_multimodal_dataset`` stacks samples into ``(B, T, 3, H, W)``,
-    the format expected by ``VideoMAEModel``.
+    All frames are decoded, then split into windows of ``num_frames`` with a
+    configurable ``stride``.  When ``stride == num_frames`` (default) windows
+    are non-overlapping; smaller strides produce overlapping windows.
+    Incomplete trailing frames are discarded.  Videos shorter than one window
+    are padded with the last frame.
 
     Args:
         root_dir:        Root directory containing ``{split}/{Truthful,Deceptive}/``
                          sub-trees of ``.mp4`` files.
         split:           ``"Train"`` or ``"Test"``.
-        num_frames:      Number of frames to sample uniformly from each clip.
+        num_frames:      Window size — number of frames per VideoMAE input clip.
+        stride:          Step between window start frames.  Defaults to
+                         ``num_frames`` (non-overlapping).
         processor_name:  HuggingFace model/processor identifier used to build
                          ``VideoMAEImageProcessor`` (default ``"MCG-NJU/videomae-base"``).
         key_fn:          Optional function mapping a filename stem to a canonical
@@ -62,12 +65,14 @@ class VideoClipDataset(Dataset):
         root_dir: str,
         split: str = "Train",
         num_frames: int = 16,
+        stride: Optional[int] = None,
         processor_name: str = "MCG-NJU/videomae-base",
         key_fn: Optional[Callable[[str], str]] = None,
     ) -> None:
         self.root_dir = Path(root_dir)
         self.split = split
         self.num_frames = num_frames
+        self.stride = stride if stride is not None else num_frames
         self.processor_name = processor_name
         self._key_fn = key_fn or (lambda s: s)
 
@@ -102,11 +107,11 @@ class VideoClipDataset(Dataset):
         return VideoClipDataset._processor_cache[self.processor_name]
 
     # ------------------------------------------------------------------
-    # Frame sampling
+    # Frame decoding
     # ------------------------------------------------------------------
 
-    def _sample_frames(self, path: Path) -> List[np.ndarray]:
-        """Decode video and return num_frames evenly-spaced HWC uint8 arrays."""
+    def _decode_all_frames(self, path: Path) -> List[np.ndarray]:
+        """Decode all frames of a video and return HWC uint8 RGB arrays."""
         try:
             import av  # type: ignore[import-untyped]
         except ImportError as exc:
@@ -118,27 +123,17 @@ class VideoClipDataset(Dataset):
         container = av.open(str(path))
         video_stream = container.streams.video[0]
 
-        # Collect all frames (decoded as RGB numpy arrays)
         all_frames: List[np.ndarray] = []
         for frame in container.decode(video_stream):
             all_frames.append(frame.to_ndarray(format="rgb24"))
         container.close()
 
-        n = len(all_frames)
-        if n == 0:
-            # Fallback: return black frames
+        if len(all_frames) == 0:
             h = video_stream.height or 224
             w = video_stream.width or 224
-            return [np.zeros((h, w, 3), dtype=np.uint8)] * self.num_frames
+            all_frames = [np.zeros((h, w, 3), dtype=np.uint8)]
 
-        if n < self.num_frames:
-            # Repeat last frame to reach num_frames
-            all_frames = all_frames + [all_frames[-1]] * (self.num_frames - n)
-            n = self.num_frames
-
-        # Sample num_frames evenly spaced indices
-        indices = np.linspace(0, n - 1, self.num_frames, dtype=int)
-        return [all_frames[i] for i in indices]
+        return all_frames
 
     # ------------------------------------------------------------------
     # Dataset interface
@@ -150,15 +145,24 @@ class VideoClipDataset(Dataset):
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, int]:
         mp4_path, label = self.samples[idx]
 
-        frames = self._sample_frames(mp4_path)
+        all_frames = self._decode_all_frames(mp4_path)
+        window_size = self.num_frames
+
+        # Pad short videos to at least one full window
+        if len(all_frames) < window_size:
+            all_frames = all_frames + [all_frames[-1]] * (window_size - len(all_frames))
+
         processor = self._get_processor()
+        n = len(all_frames)
 
-        # processor accepts list of HWC numpy arrays or PIL images.
-        # Returns dict with "pixel_values" of shape (1, T, 3, H, W).
-        inputs = processor(frames, return_tensors="pt")
-        # Squeeze batch dim: (T, 3, H, W)
-        pixel_values: torch.Tensor = inputs["pixel_values"].squeeze(0)
+        windows: List[torch.Tensor] = []
+        for start in range(0, n - window_size + 1, self.stride):
+            w_frames = all_frames[start : start + window_size]
+            # processor returns {"pixel_values": (1, T, 3, H, W)}
+            inp = processor(w_frames, return_tensors="pt")
+            windows.append(inp["pixel_values"].squeeze(0))  # (T, 3, H, W)
 
+        pixel_values: torch.Tensor = torch.stack(windows)  # (N_windows, T, 3, H, W)
         return pixel_values, label
 
     # ------------------------------------------------------------------

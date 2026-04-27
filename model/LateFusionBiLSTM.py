@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 
 
-class BiGRUEncoder(nn.Module):
+class BiLSTMEncoder(nn.Module):
     def __init__(
         self,
         d_in: int,
@@ -18,7 +18,7 @@ class BiGRUEncoder(nn.Module):
         self.pooling = pooling
         self.top_k = top_k
 
-        self.gru = nn.GRU(
+        self.lstm = nn.LSTM(
             input_size=d_in,
             hidden_size=hidden,
             num_layers=num_layers,
@@ -38,7 +38,7 @@ class BiGRUEncoder(nn.Module):
         packed = nn.utils.rnn.pack_padded_sequence(
             x, lengths.cpu(), batch_first=True, enforce_sorted=False
         )
-        packed_out, _ = self.gru(packed)
+        packed_out, _ = self.lstm(packed)
         out, _ = nn.utils.rnn.pad_packed_sequence(packed_out, batch_first=True)
 
         batch_size, max_steps, _ = out.shape
@@ -84,7 +84,7 @@ class BiGRUEncoder(nn.Module):
         return pooled
 
 
-class LateFusionBiGRUClassifier(nn.Module):
+class LateFusionBiLSTMClassifier(nn.Module):
     def __init__(
         self,
         visual_d_in: Optional[int] = None,
@@ -112,7 +112,7 @@ class LateFusionBiGRUClassifier(nn.Module):
         if self.use_visual:
             if visual_d_in is None:
                 raise ValueError("visual_d_in must be provided when use_visual=True.")
-            self.visual_encoder: Optional[BiGRUEncoder] = BiGRUEncoder(
+            self.visual_encoder: Optional[BiLSTMEncoder] = BiLSTMEncoder(
                 d_in=visual_d_in,
                 hidden=hidden,
                 num_layers=num_layers,
@@ -126,7 +126,7 @@ class LateFusionBiGRUClassifier(nn.Module):
         if self.use_audio:
             if audio_d_in is None:
                 raise ValueError("audio_d_in must be provided when use_audio=True.")
-            self.audio_encoder: Optional[BiGRUEncoder] = BiGRUEncoder(
+            self.audio_encoder: Optional[BiLSTMEncoder] = BiLSTMEncoder(
                 d_in=audio_d_in,
                 hidden=hidden,
                 num_layers=num_layers,
@@ -140,7 +140,7 @@ class LateFusionBiGRUClassifier(nn.Module):
         if self.use_text:
             if text_d_in is None:
                 raise ValueError("text_d_in must be provided when use_text=True.")
-            self.text_encoder: Optional[BiGRUEncoder] = BiGRUEncoder(
+            self.text_encoder: Optional[BiLSTMEncoder] = BiLSTMEncoder(
                 d_in=text_d_in,
                 hidden=hidden,
                 num_layers=num_layers,
@@ -176,7 +176,7 @@ class LateFusionBiGRUClassifier(nn.Module):
                 raise ValueError(
                     "visual_x and visual_lengths are required when use_visual=True."
                 )
-            enc = cast(BiGRUEncoder, self.visual_encoder)
+            enc = cast(BiLSTMEncoder, self.visual_encoder)
             features.append(enc(visual_x, visual_lengths))
 
         if self.use_audio:
@@ -184,7 +184,7 @@ class LateFusionBiGRUClassifier(nn.Module):
                 raise ValueError(
                     "audio_x and audio_lengths are required when use_audio=True."
                 )
-            enc = cast(BiGRUEncoder, self.audio_encoder)
+            enc = cast(BiLSTMEncoder, self.audio_encoder)
             features.append(enc(audio_x, audio_lengths))
 
         if self.use_text:
@@ -192,7 +192,7 @@ class LateFusionBiGRUClassifier(nn.Module):
                 raise ValueError(
                     "text_x and text_lengths are required when use_text=True."
                 )
-            enc = cast(BiGRUEncoder, self.text_encoder)
+            enc = cast(BiLSTMEncoder, self.text_encoder)
             features.append(enc(text_x, text_lengths))
 
         fused = torch.cat(features, dim=-1)
