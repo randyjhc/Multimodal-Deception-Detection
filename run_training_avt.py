@@ -11,6 +11,7 @@ import argparse
 import json
 import sys
 from dataclasses import dataclass, field
+from typing import Optional
 
 import matplotlib
 
@@ -42,10 +43,10 @@ from model.LateFusionBiGRU import LateFusionBiGRUClassifier
 # ---------------------------------------------------------------------------
 @dataclass
 class Config:
-    # paths
-    openface_root: str = "dataset/UR_LYING_Deception_Dataset/openface_raw"
-    opensmile_root: str = "dataset/UR_LYING_Deception_Dataset/opensmile_raw"
-    whisper_root: str = "dataset/UR_LYING_Deception_Dataset/whisper_raw"
+    # paths (set to None to disable that modality)
+    openface_root: Optional[str] = "dataset/UR_LYING_Deception_Dataset/openface_raw"
+    opensmile_root: Optional[str] = "dataset/UR_LYING_Deception_Dataset/opensmile_raw"
+    whisper_root: Optional[str] = "dataset/UR_LYING_Deception_Dataset/whisper_raw"
     # training
     batch_size: int = 16
     epochs: int = 30
@@ -57,6 +58,9 @@ class Config:
     fusion_hidden: int = 128
     patience: int = 5
     use_scheduler: bool = True
+    scheduler_type: str = "cosine"  # "cosine" | "plateau"
+    plateau_factor: float = 0.5
+    plateau_patience: int = 3
     save_path: str = "best_bigru_avt.pt"
     device: str = "cuda"
     seed: int = 42
@@ -112,12 +116,22 @@ def train_one_epoch(
     for visual_x, visual_len, audio_x, audio_len, text_x, text_len, y in tqdm(
         loader, desc="Train", unit="batch", disable=not sys.stderr.isatty()
     ):
-        visual_x, visual_len = visual_x.to(device), visual_len.to(device)
-        audio_x, audio_len = audio_x.to(device), audio_len.to(device)
-        text_x, text_len = text_x.to(device), text_len.to(device)
+        if visual_x is not None:
+            visual_x, visual_len = visual_x.to(device), visual_len.to(device)
+        if audio_x is not None:
+            audio_x, audio_len = audio_x.to(device), audio_len.to(device)
+        if text_x is not None:
+            text_x, text_len = text_x.to(device), text_len.to(device)
         y = y.to(device)
 
-        logits = model(visual_x, visual_len, audio_x, audio_len, text_x, text_len)
+        logits = model(
+            visual_x=visual_x,
+            visual_lengths=visual_len,
+            audio_x=audio_x,
+            audio_lengths=audio_len,
+            text_x=text_x,
+            text_lengths=text_len,
+        )
         loss = criterion(logits, y)
 
         optimizer.zero_grad()
@@ -144,12 +158,22 @@ def eval_one_epoch(
     for visual_x, visual_len, audio_x, audio_len, text_x, text_len, y in tqdm(
         loader, desc=desc, unit="batch", disable=not sys.stderr.isatty()
     ):
-        visual_x, visual_len = visual_x.to(device), visual_len.to(device)
-        audio_x, audio_len = audio_x.to(device), audio_len.to(device)
-        text_x, text_len = text_x.to(device), text_len.to(device)
+        if visual_x is not None:
+            visual_x, visual_len = visual_x.to(device), visual_len.to(device)
+        if audio_x is not None:
+            audio_x, audio_len = audio_x.to(device), audio_len.to(device)
+        if text_x is not None:
+            text_x, text_len = text_x.to(device), text_len.to(device)
         y = y.to(device)
 
-        logits = model(visual_x, visual_len, audio_x, audio_len, text_x, text_len)
+        logits = model(
+            visual_x=visual_x,
+            visual_lengths=visual_len,
+            audio_x=audio_x,
+            audio_lengths=audio_len,
+            text_x=text_x,
+            text_lengths=text_len,
+        )
         loss = criterion(logits, y)
 
         total_loss += loss.item() * y.size(0)
@@ -159,7 +183,11 @@ def eval_one_epoch(
 
 
 def _make_model(
-    visual_d_in: int, audio_d_in: int, text_d_in: int, device: torch.device, cfg: Config
+    visual_d_in: Optional[int],
+    audio_d_in: Optional[int],
+    text_d_in: Optional[int],
+    device: torch.device,
+    cfg: Config,
 ) -> LateFusionBiGRUClassifier:
     return LateFusionBiGRUClassifier(
         visual_d_in=visual_d_in,
@@ -170,9 +198,9 @@ def _make_model(
         dropout=cfg.dropout,
         pooling=cfg.pooling,
         fusion_hidden=cfg.fusion_hidden,
-        use_visual=True,
-        use_audio=True,
-        use_text=True,
+        use_visual=visual_d_in is not None,
+        use_audio=audio_d_in is not None,
+        use_text=text_d_in is not None,
     ).to(device)
 
 
@@ -243,13 +271,19 @@ def main() -> None:
         model = _make_model(visual_d_in, audio_d_in, text_d_in, device, cfg)
         criterion = nn.BCEWithLogitsLoss()
         optimizer = optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=1e-4)
-        scheduler = (
-            optim.lr_scheduler.CosineAnnealingLR(
+        if not cfg.use_scheduler:
+            scheduler = None
+        elif cfg.scheduler_type == "plateau":
+            scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer,
+                mode="min",
+                factor=cfg.plateau_factor,
+                patience=cfg.plateau_patience,
+            )
+        else:  # "cosine"
+            scheduler = optim.lr_scheduler.CosineAnnealingLR(
                 optimizer, T_max=cfg.epochs, eta_min=cfg.lr * 0.01
             )
-            if cfg.use_scheduler
-            else None
-        )
 
         best_val_acc = 0.0
         best_val_loss = float("inf")
@@ -263,7 +297,9 @@ def main() -> None:
                 train_loader, model, optimizer, criterion, device
             )
             vl_loss, vl_acc = eval_one_epoch(val_loader, model, criterion, device)
-            if scheduler is not None:
+            if isinstance(scheduler, optim.lr_scheduler.ReduceLROnPlateau):
+                scheduler.step(vl_loss)
+            elif scheduler is not None:
                 scheduler.step()
 
             train_losses.append(tr_loss)
@@ -273,7 +309,7 @@ def main() -> None:
 
             print(
                 f"  Epoch {epoch}/{cfg.epochs}"
-                f" | lr={(scheduler.get_last_lr()[0] if scheduler is not None else cfg.lr):.2e}"
+                f" | lr={optimizer.param_groups[0]['lr']:.2e}"
                 f" | train={tr_loss:.4f} acc={tr_acc:.4f}"
                 f" | val={vl_loss:.4f} acc={vl_acc:.4f}"
             )
@@ -298,6 +334,9 @@ def main() -> None:
                             "dropout": cfg.dropout,
                             "pooling": cfg.pooling,
                             "fusion_hidden": cfg.fusion_hidden,
+                            "use_visual": visual_d_in is not None,
+                            "use_audio": audio_d_in is not None,
+                            "use_text": text_d_in is not None,
                         },
                         "dataset_config": {
                             "openface_root": cfg.openface_root,
@@ -527,6 +566,9 @@ def main() -> None:
                     "dropout": cfg.dropout,
                     "pooling": cfg.pooling,
                     "fusion_hidden": cfg.fusion_hidden,
+                    "use_visual": visual_d_in is not None,
+                    "use_audio": audio_d_in is not None,
+                    "use_text": text_d_in is not None,
                 },
                 "dataset_config": {
                     "openface_root": cfg.openface_root,
@@ -560,13 +602,21 @@ def main() -> None:
             for visual_x, visual_len, audio_x, audio_len, text_x, text_len, y in tqdm(
                 test_loader, desc="Test", unit="batch", disable=not sys.stderr.isatty()
             ):
-                visual_x, visual_len = visual_x.to(device), visual_len.to(device)
-                audio_x, audio_len = audio_x.to(device), audio_len.to(device)
-                text_x, text_len = text_x.to(device), text_len.to(device)
+                if visual_x is not None:
+                    visual_x, visual_len = visual_x.to(device), visual_len.to(device)
+                if audio_x is not None:
+                    audio_x, audio_len = audio_x.to(device), audio_len.to(device)
+                if text_x is not None:
+                    text_x, text_len = text_x.to(device), text_len.to(device)
                 y = y.to(device)
 
                 logits = model(
-                    visual_x, visual_len, audio_x, audio_len, text_x, text_len
+                    visual_x=visual_x,
+                    visual_lengths=visual_len,
+                    audio_x=audio_x,
+                    audio_lengths=audio_len,
+                    text_x=text_x,
+                    text_lengths=text_len,
                 )
                 loss = criterion(logits, y)
 

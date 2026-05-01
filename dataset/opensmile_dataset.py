@@ -11,25 +11,25 @@ from torch.utils.data import Dataset
 # ---------------------------------------------------------------------------
 
 AUDIO_FEATURE_COLS: List[str] = [
-    # Loudness / spectral
-    "Loudness_sma3",
-    "alphaRatio_sma3",
-    "hammarbergIndex_sma3",
-    "slope0-500_sma3",
-    "slope500-1500_sma3",
-    "spectralFlux_sma3",
-    # MFCCs
-    "mfcc1_sma3",
-    "mfcc2_sma3",
-    "mfcc3_sma3",
-    "mfcc4_sma3",
-    # Fundamental frequency / voice quality
-    "F0semitoneFrom27.5Hz_sma3nz",
-    "jitterLocal_sma3nz",
-    "shimmerLocaldB_sma3nz",
-    "HNRdBACF_sma3nz",
-    "logRelF0-H1-H2_sma3nz",
-    "logRelF0-H1-A3_sma3nz",
+    # # Loudness / spectral
+    # "Loudness_sma3",
+    # "alphaRatio_sma3",
+    # "hammarbergIndex_sma3",
+    # "slope0-500_sma3",
+    # "slope500-1500_sma3",
+    # "spectralFlux_sma3",
+    # # MFCCs
+    # "mfcc1_sma3",
+    # "mfcc2_sma3",
+    # "mfcc3_sma3",
+    # "mfcc4_sma3",
+    # # Fundamental frequency / voice quality
+    # "F0semitoneFrom27.5Hz_sma3nz",
+    # "jitterLocal_sma3nz",
+    # "shimmerLocaldB_sma3nz",
+    # "HNRdBACF_sma3nz",
+    # "logRelF0-H1-H2_sma3nz",
+    # "logRelF0-H1-A3_sma3nz",
     # Formants
     "F1frequency_sma3nz",
     "F1bandwidth_sma3nz",
