@@ -22,8 +22,8 @@ matplotlib.use("Agg")
 # ==== Constants ====
 
 # Paths
-OPENFACE_DIR = Path("open_face/OpenFace_features/OpenFace_features")
-PLOTS_DIR = Path("open_face/plots")
+OPENFACE_DIR = Path("dataset/UR_LYING_Deception_Dataset/openface_raw")
+PLOTS_DIR = Path("plots")
 # AU Metric Suffixes
 AU_REGRESSION_SUFFIX = "_r"
 AU_CLASSIFICATION_SUFFIX = "_c"

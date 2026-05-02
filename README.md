@@ -47,27 +47,17 @@ python run_training_avt.py --config configs/config_vt   # V+T
 
 Each config is a JSON file specifying data roots, hyperparameters, and which modalities to activate (set a root to `null` to disable that modality). See [`configs/config_avt`](configs/config_avt) for a documented example.
 
-### Visual Only — BiLSTM Baseline
-
-```bash
-# Single run with hardcoded hyperparameters
-python run_training.py
-
-# 5-fold CV hyperparameter search, then final training + test evaluation
-python run_cv_training.py
-```
+### Visual or Audio Only
+(place holder)
 
 ## Inference / Evaluation
 
 ```bash
-# Evaluate default checkpoint
-uv run python test_model.py
-
 # Evaluate a specific checkpoint
-uv run python test_model.py --ckpt best_bigru_avt.pt
+python test_model.py --ckpt best_bigru_avt.pt
 
 # Override data roots and device
-uv run python test_model.py --ckpt best_bigru_avt.pt \
+python test_model.py --ckpt best_bigru_avt.pt \
     --root dataset/UR_LYING_Deception_Dataset/openface_raw \
     --opensmile_root dataset/UR_LYING_Deception_Dataset/opensmile_raw \
     --whisper_root dataset/UR_LYING_Deception_Dataset/whisper_raw \
