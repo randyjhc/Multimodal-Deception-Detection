@@ -1,14 +1,10 @@
 """
 Compute Action Unit (AU) statistics from OpenFace features.
 
-Extracts and analyzes AU activations for Deceptive vs. Truthful classes:
-  - AU##_r (regression): Average intensity across frames (0-5 scale)
-  - AU##_c (classification): Frequency of occurrence (proportion of frames with AU=1)
-
 Provides three levels of statistics:
-  A) Per-video average AU activation
-  B) Per-class average AU activation (Deceptive vs Truthful)
-  C) Dataset-level average activation (combined)
+  - Per-video average AU activation
+  - Per-class average AU activation (Deceptive vs Truthful)
+  - Dataset-level average activation (combined)
 """
 
 import argparse
@@ -23,25 +19,20 @@ from scipy import stats
 # Use non-interactive backend for saving plots
 matplotlib.use("Agg")
 
-# ============================================================================
-# Constants
-# ============================================================================
+# ==== Constants ====
 
 # Paths
 OPENFACE_DIR = Path("open_face/OpenFace_features/OpenFace_features")
 PLOTS_DIR = Path("open_face/plots")
-
 # AU Metric Suffixes
 AU_REGRESSION_SUFFIX = "_r"
 AU_CLASSIFICATION_SUFFIX = "_c"
 AU_INTENSITY_METRIC = "_r_intensity"
 AU_FREQUENCY_METRIC = "_c_frequency"
-
 # Metric Type Labels
 REGRESSION_YLABEL = "AU Intensity (0-5 scale)"
 CLASSIFICATION_YLABEL = "AU Frequency (proportion of frames)"
-
-# Visualization Constants
+# Visualization
 FIGURE_SIZE_SMALL = (12, 8)
 FIGURE_SIZE_LARGE = (16, 8)
 PLOT_DPI = 300
@@ -56,24 +47,16 @@ VIOLIN_WIDTH = 1.0
 BOX_WIDTH = 0.4
 VIOLIN_SPACING = 1.5
 GRID_ALPHA = 0.3
+METRIC_TYPES = ["regression", "classification"]
 
 
-# ============================================================================
-# Utility Functions
-# ============================================================================
+# ==== Utility Functions ====
 
 
-def get_metric_config(metric_type: str) -> tuple[str, str]:
-    """Get suffix and ylabel for a given metric type.
-
-    Args:
-        metric_type: Either "regression" or "classification".
-
-    Returns:
-        Tuple of (suffix, ylabel).
-
-    Raises:
-        ValueError: If metric_type is invalid.
+def get_metric_config(metric_type):
+    """
+    Get suffix and ylabel for a given metric type.
+    Returns: (suffix, ylabel).
     """
     if metric_type == "regression":
         return AU_INTENSITY_METRIC, REGRESSION_YLABEL
@@ -83,98 +66,37 @@ def get_metric_config(metric_type: str) -> tuple[str, str]:
         raise ValueError(f"Invalid metric_type: {metric_type}")
 
 
-def extract_metric_values(stats_list: list[dict[str, float]], metric: str) -> list[float]:
-    """Extract values for a specific metric from a list of statistics dicts.
-
-    Args:
-        stats_list: List of per-video statistics dictionaries.
-        metric: Metric key to extract.
-
-    Returns:
-        List of values for the specified metric.
-    """
+def extract_metric_values(stats_list, metric):
     return [stats[metric] for stats in stats_list]
 
 
-def compute_ttest(
-    deceptive_stats: list[dict[str, float]],
-    truthful_stats: list[dict[str, float]],
-    metric: str,
-) -> tuple[float, float]:
-    """Compute t-test between deceptive and truthful values for a metric.
-
-    Args:
-        deceptive_stats: List of per-video statistics for deceptive class.
-        truthful_stats: List of per-video statistics for truthful class.
-        metric: Metric key to test.
-
-    Returns:
-        Tuple of (t_statistic, p_value).
-    """
+def compute_ttest(deceptive_stats, truthful_stats, metric):
     d_vals = extract_metric_values(deceptive_stats, metric)
     t_vals = extract_metric_values(truthful_stats, metric)
     return stats.ttest_ind(d_vals, t_vals, equal_var=False)
 
 
-def get_metrics_by_suffix(
-    stats_dict: dict[str, float] | dict[str, dict[str, float]], suffix: str
-) -> list[str]:
-    """Get sorted list of metric keys ending with specified suffix.
-
-    Args:
-        stats_dict: Statistics dictionary to filter.
-        suffix: Suffix to filter by (e.g., "_r_intensity").
-
-    Returns:
-        Sorted list of metric keys.
-    """
+def get_metrics_by_suffix(stats_dict, suffix):
     return sorted([k for k in stats_dict.keys() if k.endswith(suffix)])
 
 
-def extract_au_name(metric: str) -> str:
-    """Extract AU name from metric key by removing suffix.
-
-    Args:
-        metric: Metric key (e.g., "AU01_r_intensity").
-
-    Returns:
-        AU name without suffix (e.g., "AU01").
-    """
+def extract_au_name(metric):
     for suffix in [AU_INTENSITY_METRIC, AU_FREQUENCY_METRIC]:
         if metric.endswith(suffix):
             return metric.replace(suffix, "")
     return metric
 
 
-def extract_summary_stats(
-    summary: dict[str, dict[str, float]], metrics: list[str]
-) -> tuple[list[float], list[float]]:
-    """Extract means and stds for given metrics.
-
-    Args:
-        summary: Summary statistics dictionary with "mean" and "std" keys.
-        metrics: List of metric keys to extract.
-
-    Returns:
-        Tuple of (means, stds) lists.
-    """
+def extract_summary_stats(summary, metrics):
     means = [summary[m]["mean"] for m in metrics]
     stds = [summary[m]["std"] for m in metrics]
     return means, stds
 
 
-# ============================================================================
-# Data Processing Functions
-# ============================================================================
+# ==== Data Processing Functions ====
 
 
-def get_au_columns(header: list[str]) -> tuple[dict[str, int], dict[str, int]]:
-    """Extract AU column indices from CSV header.
-
-    Returns:
-        Tuple of (regression_aus, classification_aus) where each is a dict
-        mapping AU name (e.g., 'AU01') to column index.
-    """
+def get_au_columns(header):
     au_r_cols = {}
     au_c_cols = {}
 
@@ -190,13 +112,11 @@ def get_au_columns(header: list[str]) -> tuple[dict[str, int], dict[str, int]]:
 
 
 def compute_video_au_stats(filepath: Path) -> dict[str, float]:
-    """Compute per-video AU statistics.
-
+    """
+    Compute per-video AU statistics.
     For AU##_r: Computes average intensity across all frames.
     For AU##_c: Computes frequency of occurrence (proportion of frames where AU=1).
-
-    Returns:
-        Dict mapping AU metric names to their values.
+    Returns: Dict mapping AU metric names to their values.
     """
     with filepath.open(encoding="utf-8") as f:
         reader = csv.reader(f)
@@ -208,19 +128,20 @@ def compute_video_au_stats(filepath: Path) -> dict[str, float]:
         au_r_values: dict[str, list[float]] = {au: [] for au in au_r_cols}
         au_c_values: dict[str, list[float]] = {au: [] for au in au_c_cols}
 
+        min_cols = (
+            max(
+                max(au_r_cols.values(), default=0),
+                max(au_c_cols.values(), default=0),
+            )
+            + 1
+        )
+
         for row in reader:
             # Skip rows with insufficient data
-            if (
-                len(row)
-                < max(
-                    max(au_r_cols.values(), default=0),
-                    max(au_c_cols.values(), default=0),
-                )
-                + 1
-            ):
+            if len(row) < min_cols:
                 continue
 
-            # Collect regression AU values (intensity)
+            # Collect regression AU values
             for au, col_idx in au_r_cols.items():
                 try:
                     value = float(row[col_idx])
@@ -228,7 +149,7 @@ def compute_video_au_stats(filepath: Path) -> dict[str, float]:
                 except (ValueError, IndexError):
                     pass
 
-            # Collect classification AU values (binary)
+            # Collect classification AU values
             for au, col_idx in au_c_cols.items():
                 try:
                     value = float(row[col_idx])
@@ -239,32 +160,19 @@ def compute_video_au_stats(filepath: Path) -> dict[str, float]:
     # Compute statistics
     stats_dict = {}
 
-    # Regression AUs: average intensity
-    for au, values in au_r_values.items():
-        if values:
-            stats_dict[f"{au}{AU_INTENSITY_METRIC}"] = sum(values) / len(values)
-        else:
-            stats_dict[f"{au}{AU_INTENSITY_METRIC}"] = 0.0
-
-    # Classification AUs: frequency of occurrence
-    for au, values in au_c_values.items():
-        if values:
-            stats_dict[f"{au}{AU_FREQUENCY_METRIC}"] = sum(values) / len(values)
-        else:
-            stats_dict[f"{au}{AU_FREQUENCY_METRIC}"] = 0.0
+    for au_values, metric_suffix in [
+        (au_r_values, AU_INTENSITY_METRIC),
+        (au_c_values, AU_FREQUENCY_METRIC),
+    ]:
+        for au, values in au_values.items():
+            stats_dict[f"{au}{metric_suffix}"] = (
+                sum(values) / len(values) if values else 0.0
+            )
 
     return stats_dict
 
 
-def compute_class_average(video_stats_list: list[dict[str, float]]) -> dict[str, dict[str, float]]:
-    """Compute per-class average AU statistics.
-
-    Args:
-        video_stats_list: List of per-video statistics dicts.
-
-    Returns:
-        Dict mapping each AU metric to {'mean': float, 'std': float}.
-    """
+def compute_class_average(video_stats_list):
     if not video_stats_list:
         return {}
 
@@ -284,18 +192,7 @@ def compute_class_average(video_stats_list: list[dict[str, float]]) -> dict[str,
     return summary
 
 
-def compute_dataset_average(
-    deceptive_videos: list[dict[str, float]], truthful_videos: list[dict[str, float]]
-) -> dict[str, float]:
-    """Compute dataset-level average AU statistics.
-
-    Args:
-        deceptive_videos: List of per-video statistics for deceptive class.
-        truthful_videos: List of per-video statistics for truthful class.
-
-    Returns:
-        Dict mapping each AU metric to overall mean across all videos.
-    """
+def compute_dataset_average(deceptive_videos, truthful_videos):
     all_videos = deceptive_videos + truthful_videos
 
     if not all_videos:
@@ -311,31 +208,19 @@ def compute_dataset_average(
     return dataset_avg
 
 
-# ============================================================================
-# Display Utilities
-# ============================================================================
+# ==== Display Utilities ====
 
 
 def print_au_statistics(
-    d_summary: dict[str, dict[str, float]],
-    t_summary: dict[str, dict[str, float]],
-    deceptive_stats: list[dict[str, float]],
-    truthful_stats: list[dict[str, float]],
-    dataset_avg: dict[str, float],
-    suffix: str,
-    section_title: str,
-) -> None:
-    """Print formatted AU statistics table for a given metric type.
-
-    Args:
-        d_summary: Deceptive class summary statistics.
-        t_summary: Truthful class summary statistics.
-        deceptive_stats: List of per-video stats for deceptive class.
-        truthful_stats: List of per-video stats for truthful class.
-        dataset_avg: Dataset-level average statistics.
-        suffix: Metric suffix to filter by.
-        section_title: Title for the section.
-    """
+    d_summary,
+    t_summary,
+    deceptive_stats,
+    truthful_stats,
+    dataset_avg,
+    suffix,
+    section_title,
+):
+    """Print formatted AU statistics table for a given metric type."""
     print("\n" + "=" * 100)
     print(section_title)
     print("=" * 100)
@@ -362,54 +247,27 @@ def print_au_statistics(
         )
 
 
-# ============================================================================
-# Matplotlib Utilities
-# ============================================================================
+# ==== Matplotlib Utilities ====
 
 
-def save_and_close_plot(fig, output_path: Path) -> None:
-    """Save plot to file and close figure.
-
-    Args:
-        fig: Matplotlib figure to save.
-        output_path: Path where plot will be saved.
-    """
+def save_and_close_plot(fig, output_path):
     plt.tight_layout()
     plt.savefig(output_path, dpi=PLOT_DPI, bbox_inches="tight")
     plt.close(fig)
     print(f"  Saved: {output_path}")
 
 
-def set_plot_labels(ax, xlabel: str, ylabel: str, title: str) -> None:
-    """Set axis labels and title with consistent styling.
-
-    Args:
-        ax: Matplotlib axis object.
-        xlabel: Label for x-axis.
-        ylabel: Label for y-axis.
-        title: Plot title.
-    """
+def set_plot_labels(ax, xlabel, ylabel, title):
     ax.set_xlabel(xlabel, fontsize=FONT_SIZE_MEDIUM)
     ax.set_ylabel(ylabel, fontsize=FONT_SIZE_MEDIUM)
     ax.set_title(title, fontsize=FONT_SIZE_LARGE, fontweight="bold")
 
 
-# ============================================================================
-# Visualization Functions
-# ============================================================================
+# ==== Visualization Functions ====
 
 
-def plot_video_au_activation(
-    video_stats: dict[str, float], video_name: str, metric_type: str, output_dir: Path
-) -> None:
-    """Plot per-video AU activation as horizontal bar chart.
-
-    Args:
-        video_stats: Per-video statistics dict from compute_video_au_stats().
-        video_name: Display name for the plot title.
-        metric_type: Either "regression" (intensity) or "classification" (frequency).
-        output_dir: Directory to save the plot.
-    """
+def plot_video_au_activation(video_stats, video_name, metric_type, output_dir):
+    """Plot per-video AU activation as horizontal bar chart."""
     suffix, ylabel = get_metric_config(metric_type)
 
     # Extract AU names and values
@@ -440,23 +298,14 @@ def plot_video_au_activation(
 
 
 def plot_class_comparison(
-    deceptive_summary: dict[str, dict[str, float]],
-    truthful_summary: dict[str, dict[str, float]],
-    deceptive_stats: list[dict[str, float]],
-    truthful_stats: list[dict[str, float]],
-    metric_type: str,
-    output_dir: Path,
-) -> None:
-    """Plot per-class AU comparison as grouped bar chart with significance markers.
-
-    Args:
-        deceptive_summary: Class average dict from compute_class_average().
-        truthful_summary: Class average dict from compute_class_average().
-        deceptive_stats: List of per-video stats for deceptive class (for t-test).
-        truthful_stats: List of per-video stats for truthful class (for t-test).
-        metric_type: Either "regression" (intensity) or "classification" (frequency).
-        output_dir: Directory to save the plot.
-    """
+    deceptive_summary,
+    truthful_summary,
+    deceptive_stats,
+    truthful_stats,
+    metric_type,
+    output_dir,
+):
+    """Plot per-class AU comparison as grouped bar chart with significance markers."""
     suffix, base_ylabel = get_metric_config(metric_type)
     ylabel = f"Average {base_ylabel}"
 
@@ -500,7 +349,10 @@ def plot_class_comparison(
     )
 
     # Add asterisk to x-labels for significant AUs (p < 0.05)
-    au_labels = [f"{au_names[i]}*" if p_values[i] < 0.05 else au_names[i] for i in range(len(au_names))]
+    au_labels = [
+        f"{au_names[i]}*" if p_values[i] < 0.05 else au_names[i]
+        for i in range(len(au_names))
+    ]
 
     set_plot_labels(
         ax,
@@ -518,19 +370,12 @@ def plot_class_comparison(
 
 
 def plot_dataset_distribution(
-    deceptive_stats: list[dict[str, float]],
-    truthful_stats: list[dict[str, float]],
-    metric_type: str,
-    output_dir: Path,
-) -> None:
-    """Plot dataset-wide AU distribution as violin plot (combined classes).
-
-    Args:
-        deceptive_stats: List of per-video statistics for deceptive class.
-        truthful_stats: List of per-video statistics for truthful class.
-        metric_type: Either "regression" (intensity) or "classification" (frequency).
-        output_dir: Directory to save the plot.
-    """
+    deceptive_stats,
+    truthful_stats,
+    metric_type,
+    output_dir,
+):
+    """Plot dataset-wide AU distribution as violin plot (combined classes)."""
     suffix, ylabel = get_metric_config(metric_type)
 
     # Extract AU names and collect data
@@ -620,7 +465,9 @@ def plot_dataset_distribution(
 
     # Add legend
     legend_elements = [
-        Patch(facecolor=COLOR_COMBINED, alpha=0.5, label="Combined (Deceptive + Truthful)"),
+        Patch(
+            facecolor=COLOR_COMBINED, alpha=0.5, label="Combined (Deceptive + Truthful)"
+        ),
         Patch(
             facecolor="white",
             edgecolor=COLOR_COMBINED,
@@ -723,11 +570,14 @@ def main(limit: int | None = None, visualize: bool = False):
 
         # 1. Per-Video Average Activation (first video from each class as examples)
         print("\n1. Per-Video AU Activation (Example Videos):")
-        for metric_type in ["regression", "classification"]:
+        for metric_type in METRIC_TYPES:
             if deceptive_files and deceptive_stats:
                 video_name = deceptive_files[0].stem
                 plot_video_au_activation(
-                    deceptive_stats[0], f"{video_name}_deceptive", metric_type, PLOTS_DIR
+                    deceptive_stats[0],
+                    f"{video_name}_deceptive",
+                    metric_type,
+                    PLOTS_DIR,
                 )
 
             if truthful_files and truthful_stats:
@@ -738,7 +588,7 @@ def main(limit: int | None = None, visualize: bool = False):
 
         # 2. Per-Class Average Activation (Comparison)
         print("\n2. Per-Class AU Comparison (Deceptive vs Truthful):")
-        for metric_type in ["regression", "classification"]:
+        for metric_type in METRIC_TYPES:
             plot_class_comparison(
                 d_summary,
                 t_summary,
@@ -750,12 +600,12 @@ def main(limit: int | None = None, visualize: bool = False):
 
         # 3. Whole Dataset Distribution
         print("\n3. Dataset-wide AU Distribution:")
-        for metric_type in ["regression", "classification"]:
+        for metric_type in METRIC_TYPES:
             plot_dataset_distribution(
                 deceptive_stats, truthful_stats, metric_type, PLOTS_DIR
             )
 
-        print(f"\n✓ All visualizations saved to: {PLOTS_DIR}/")
+        print(f"\n All visualizations saved to: {PLOTS_DIR}/")
         print()
 
 
