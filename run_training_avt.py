@@ -3,8 +3,10 @@ Entry point for training the Late-Fusion BiGRU deception classifier
 using visual (OpenFace) + audio (OpenSMILE) + text (Whisper/RoBERTa) features.
 
 Usage:
-    uv run python run_training_avt.py
-    uv run python run_training_avt.py --config tuning/configs/config_001.json
+    uv run python run_training_avt.py --config configs/config_avt
+    uv run python run_training_avt.py --config configs/config_av
+    uv run python run_training_avt.py --config configs/config_at
+    uv run python run_training_avt.py --config configs/config_vt
 """
 
 import argparse
@@ -38,9 +40,7 @@ from dataset.multimodal_dataset import (
 from model.LateFusionBiGRU import LateFusionBiGRUClassifier
 
 
-# ---------------------------------------------------------------------------
-# Config dataclass
-# ---------------------------------------------------------------------------
+# ==== Config dataclass ====
 @dataclass
 class Config:
     # paths (set to None to disable that modality)
@@ -61,7 +61,7 @@ class Config:
     scheduler_type: str = "cosine"  # "cosine" | "plateau"
     plateau_factor: float = 0.5
     plateau_patience: int = 3
-    save_path: str = "best_bigru_avt.pt"
+    save_path: str = "best_bigru.pt"
     device: str = "cuda"
     seed: int = 42
     # motion filtering
@@ -78,7 +78,7 @@ class Config:
     cv_folds: int = 5
 
     @classmethod
-    def from_json(cls, path: str) -> "Config":
+    def from_json(cls, path: str):
         with open(path) as f:
             data = json.load(f)
         # null → float("inf") for high-threshold fields
@@ -88,12 +88,10 @@ class Config:
         return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
 
 
-# ---------------------------------------------------------------------------
-# Training / evaluation helpers
-# ---------------------------------------------------------------------------
+# ==== Training / evaluation helpers ====
 
 
-def seed_everything(seed: int) -> None:
+def seed_everything(seed):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -104,13 +102,21 @@ def seed_everything(seed: int) -> None:
     torch.backends.cudnn.benchmark = False
 
 
+def _resolve_device(device_str):
+    if device_str.startswith("cuda"):
+        return torch.device(device_str if torch.cuda.is_available() else "cpu")
+    if device_str == "mps":
+        return torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+    return torch.device(device_str)
+
+
 def train_one_epoch(
-    loader: DataLoader,
-    model: nn.Module,
-    optimizer: optim.Optimizer,
-    criterion: nn.Module,
-    device: torch.device,
-) -> tuple[float, float]:
+    loader,
+    model,
+    optimizer,
+    loss_fn,
+    device,
+):
     model.train()
     total_loss, correct, total = 0.0, 0, 0
     for visual_x, visual_len, audio_x, audio_len, text_x, text_len, y in tqdm(
@@ -132,7 +138,7 @@ def train_one_epoch(
             text_x=text_x,
             text_lengths=text_len,
         )
-        loss = criterion(logits, y)
+        loss = loss_fn(logits, y)
 
         optimizer.zero_grad()
         loss.backward()
@@ -147,12 +153,12 @@ def train_one_epoch(
 
 @torch.no_grad()
 def eval_one_epoch(
-    loader: DataLoader,
-    model: nn.Module,
-    criterion: nn.Module,
-    device: torch.device,
-    desc: str = "Val",
-) -> tuple[float, float]:
+    loader,
+    model,
+    loss_fn,
+    device,
+    desc="Val",
+):
     model.eval()
     total_loss, correct, total = 0.0, 0, 0
     for visual_x, visual_len, audio_x, audio_len, text_x, text_len, y in tqdm(
@@ -174,7 +180,7 @@ def eval_one_epoch(
             text_x=text_x,
             text_lengths=text_len,
         )
-        loss = criterion(logits, y)
+        loss = loss_fn(logits, y)
 
         total_loss += loss.item() * y.size(0)
         correct += ((torch.sigmoid(logits) >= 0.5).float() == y).sum().item()
@@ -186,9 +192,9 @@ def _make_model(
     visual_d_in: Optional[int],
     audio_d_in: Optional[int],
     text_d_in: Optional[int],
-    device: torch.device,
+    device,
     cfg: Config,
-) -> LateFusionBiGRUClassifier:
+):
     return LateFusionBiGRUClassifier(
         visual_d_in=visual_d_in,
         audio_d_in=audio_d_in,
@@ -213,9 +219,44 @@ def _loader_kwargs(cfg: Config, *, seed: int | None = None) -> dict:
     return kwargs
 
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
+def _model_cfg(
+    cfg: Config,
+    visual_d_in: Optional[int],
+    audio_d_in: Optional[int],
+    text_d_in: Optional[int],
+):
+    return {
+        "visual_d_in": visual_d_in,
+        "audio_d_in": audio_d_in,
+        "text_d_in": text_d_in,
+        "hidden": cfg.hidden,
+        "num_layers": cfg.num_layers,
+        "dropout": cfg.dropout,
+        "pooling": cfg.pooling,
+        "fusion_hidden": cfg.fusion_hidden,
+        "use_visual": visual_d_in is not None,
+        "use_audio": audio_d_in is not None,
+        "use_text": text_d_in is not None,
+    }
+
+
+def _dataset_cfg(cfg):
+    return {
+        "openface_root": cfg.openface_root,
+        "opensmile_root": cfg.opensmile_root,
+        "whisper_root": cfg.whisper_root,
+        "audio_subsample_k": cfg.audio_subsample_k,
+        "visual_subsample_k": cfg.visual_subsample_k,
+        "audio_motion_method": cfg.audio_motion_method,
+        "audio_motion_low": cfg.audio_motion_low,
+        "audio_motion_high": cfg.audio_motion_high,
+        "visual_motion_method": cfg.visual_motion_method,
+        "visual_motion_low": cfg.visual_motion_low,
+        "visual_motion_high": cfg.visual_motion_high,
+    }
+
+
+# ==== Main ====
 
 
 def main() -> None:
@@ -228,7 +269,7 @@ def main() -> None:
     cfg = Config.from_json(args.config) if args.config is not None else Config()
 
     seed_everything(cfg.seed)
-    device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
+    device = _resolve_device(cfg.device)
 
     ds_kwargs: dict = dict(
         visual_key_fn=openface_ur_lying_key,
@@ -243,9 +284,7 @@ def main() -> None:
         visual_motion_high=cfg.visual_motion_high,
     )
 
-    # -----------------------------------------------------------------------
-    # Mode A: single train / val / test split
-    # -----------------------------------------------------------------------
+    # ==== Mode A: single train / val / test split ====
     if not cfg.use_cv:
         train_loader, val_loader, test_loader, visual_d_in, audio_d_in, text_d_in = (
             make_avt_loaders(
@@ -269,7 +308,7 @@ def main() -> None:
         )
 
         model = _make_model(visual_d_in, audio_d_in, text_d_in, device, cfg)
-        criterion = nn.BCEWithLogitsLoss()
+        loss_fn = nn.BCEWithLogitsLoss()
         optimizer = optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=1e-4)
         if not cfg.use_scheduler:
             scheduler = None
@@ -294,9 +333,9 @@ def main() -> None:
         print("Start training...\n")
         for epoch in range(1, cfg.epochs + 1):
             tr_loss, tr_acc = train_one_epoch(
-                train_loader, model, optimizer, criterion, device
+                train_loader, model, optimizer, loss_fn, device
             )
-            vl_loss, vl_acc = eval_one_epoch(val_loader, model, criterion, device)
+            vl_loss, vl_acc = eval_one_epoch(val_loader, model, loss_fn, device)
             if isinstance(scheduler, optim.lr_scheduler.ReduceLROnPlateau):
                 scheduler.step(vl_loss)
             elif scheduler is not None:
@@ -325,32 +364,10 @@ def main() -> None:
                         "best_val_loss": best_val_loss,
                         "epoch": epoch,
                         "model_type": "multimodal_avt",
-                        "model_config": {
-                            "visual_d_in": visual_d_in,
-                            "audio_d_in": audio_d_in,
-                            "text_d_in": text_d_in,
-                            "hidden": cfg.hidden,
-                            "num_layers": cfg.num_layers,
-                            "dropout": cfg.dropout,
-                            "pooling": cfg.pooling,
-                            "fusion_hidden": cfg.fusion_hidden,
-                            "use_visual": visual_d_in is not None,
-                            "use_audio": audio_d_in is not None,
-                            "use_text": text_d_in is not None,
-                        },
-                        "dataset_config": {
-                            "openface_root": cfg.openface_root,
-                            "opensmile_root": cfg.opensmile_root,
-                            "whisper_root": cfg.whisper_root,
-                            "audio_subsample_k": cfg.audio_subsample_k,
-                            "visual_subsample_k": cfg.visual_subsample_k,
-                            "audio_motion_method": cfg.audio_motion_method,
-                            "audio_motion_low": cfg.audio_motion_low,
-                            "audio_motion_high": cfg.audio_motion_high,
-                            "visual_motion_method": cfg.visual_motion_method,
-                            "visual_motion_low": cfg.visual_motion_low,
-                            "visual_motion_high": cfg.visual_motion_high,
-                        },
+                        "model_config": _model_cfg(
+                            cfg, visual_d_in, audio_d_in, text_d_in
+                        ),
+                        "dataset_config": _dataset_cfg(cfg),
                     },
                     cfg.save_path,
                 )
@@ -368,7 +385,7 @@ def main() -> None:
 
         # Test set evaluation
         test_loss, test_acc = eval_one_epoch(
-            test_loader, model, criterion, device, desc="Test"
+            test_loader, model, loss_fn, device, desc="Test"
         )
         print(f"Test  Loss {test_loss:.4f} | Test  Acc {test_acc:.4f}")
 
@@ -388,9 +405,7 @@ def main() -> None:
             plt.savefig(name, dpi=150, bbox_inches="tight")
             plt.close()
 
-    # -----------------------------------------------------------------------
-    # Mode B: stratified K-fold cross-validation
-    # -----------------------------------------------------------------------
+    # ==== Mode B: stratified K-fold cross-validation ====
     else:
         base_ds = MultimodalDatasetAVT(
             cfg.openface_root,
@@ -445,7 +460,7 @@ def main() -> None:
             )
 
             fold_model = _make_model(visual_d_in, audio_d_in, text_d_in, device, cfg)
-            fold_criterion = nn.BCEWithLogitsLoss()
+            fold_loss_fn = nn.BCEWithLogitsLoss()
             fold_optimizer = optim.AdamW(
                 fold_model.parameters(), lr=cfg.lr, weight_decay=1e-4
             )
@@ -467,11 +482,11 @@ def main() -> None:
                     fold_train_loader,
                     fold_model,
                     fold_optimizer,
-                    fold_criterion,
+                    fold_loss_fn,
                     device,
                 )
                 vl_loss, vl_acc = eval_one_epoch(
-                    fold_val_loader, fold_model, fold_criterion, device
+                    fold_val_loader, fold_model, fold_loss_fn, device
                 )
                 if fold_scheduler is not None:
                     fold_scheduler.step()
@@ -526,7 +541,7 @@ def main() -> None:
             **_loader_kwargs(cfg, seed=cfg.seed + 2 * cfg.cv_folds + 1),
         )
         model = _make_model(visual_d_in, audio_d_in, text_d_in, device, cfg)
-        criterion = nn.BCEWithLogitsLoss()
+        loss_fn = nn.BCEWithLogitsLoss()
         optimizer = optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=1e-4)
         scheduler = (
             optim.lr_scheduler.CosineAnnealingLR(
@@ -541,7 +556,7 @@ def main() -> None:
 
         for epoch in range(1, avg_epoch + 1):
             tr_loss, tr_acc = train_one_epoch(
-                full_train_loader, model, optimizer, criterion, device
+                full_train_loader, model, optimizer, loss_fn, device
             )
             if scheduler is not None:
                 scheduler.step()
@@ -557,32 +572,8 @@ def main() -> None:
                 "mean_val_acc": mean_acc,
                 "avg_epoch": avg_epoch,
                 "model_type": "multimodal_avt",
-                "model_config": {
-                    "visual_d_in": visual_d_in,
-                    "audio_d_in": audio_d_in,
-                    "text_d_in": text_d_in,
-                    "hidden": cfg.hidden,
-                    "num_layers": cfg.num_layers,
-                    "dropout": cfg.dropout,
-                    "pooling": cfg.pooling,
-                    "fusion_hidden": cfg.fusion_hidden,
-                    "use_visual": visual_d_in is not None,
-                    "use_audio": audio_d_in is not None,
-                    "use_text": text_d_in is not None,
-                },
-                "dataset_config": {
-                    "openface_root": cfg.openface_root,
-                    "opensmile_root": cfg.opensmile_root,
-                    "whisper_root": cfg.whisper_root,
-                    "audio_subsample_k": cfg.audio_subsample_k,
-                    "visual_subsample_k": cfg.visual_subsample_k,
-                    "audio_motion_method": cfg.audio_motion_method,
-                    "audio_motion_low": cfg.audio_motion_low,
-                    "audio_motion_high": cfg.audio_motion_high,
-                    "visual_motion_method": cfg.visual_motion_method,
-                    "visual_motion_low": cfg.visual_motion_low,
-                    "visual_motion_high": cfg.visual_motion_high,
-                },
+                "model_config": _model_cfg(cfg, visual_d_in, audio_d_in, text_d_in),
+                "dataset_config": _dataset_cfg(cfg),
             },
             cfg.save_path,
         )
@@ -618,7 +609,7 @@ def main() -> None:
                     text_x=text_x,
                     text_lengths=text_len,
                 )
-                loss = criterion(logits, y)
+                loss = loss_fn(logits, y)
 
                 total_loss += loss.item() * y.size(0)
                 preds = (torch.sigmoid(logits) >= 0.5).float()

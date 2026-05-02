@@ -1,9 +1,6 @@
 """
 Evaluate a saved checkpoint on the test split.
 
-The checkpoint stores all model and dataset configuration, so no architecture
-flags are needed — just point to the checkpoint file.
-
 Usage:
     uv run python test_model.py --ckpt best_bigru.pt
     uv run python test_model.py --ckpt best_bilstm.pt --root OpenFace_features
@@ -15,12 +12,11 @@ import argparse
 
 import torch
 from torch.utils.data import DataLoader
+from typing import Optional
 
 from dataset.multimodal_dataset import (
-    MultimodalDataset,
     MultimodalDatasetAVT,
     _avt_collate,
-    _multimodal_collate,
     openface_ur_lying_key,
     opensmile_ur_lying_key,
 )
@@ -29,7 +25,7 @@ from model.BiLSTM import BiLSTMClassifier
 from model.LateFusionBiGRU import LateFusionBiGRUClassifier
 
 
-def _resolve_device(device_str: str) -> torch.device:
+def _resolve_device(device_str):
     if device_str == "cuda" and torch.cuda.is_available():
         return torch.device("cuda")
     if device_str == "mps" and torch.backends.mps.is_available():
@@ -43,7 +39,7 @@ def _print_metrics(
     total_correct: int,
     all_preds: list[float],
     all_labels: list[float],
-) -> None:
+):
     tp = sum(p == 1 and lbl == 1 for p, lbl in zip(all_preds, all_labels))
     tn = sum(p == 0 and lbl == 0 for p, lbl in zip(all_preds, all_labels))
     fp = sum(p == 1 and lbl == 0 for p, lbl in zip(all_preds, all_labels))
@@ -73,10 +69,10 @@ def _print_metrics(
 
 
 def evaluate_bilstm(
-    ckpt: dict,
-    root: str | None,
-    device: torch.device,
-) -> None:
+    ckpt,
+    root: Optional[str],
+    device,
+):
     mc = ckpt.get("model_config", {})
     dc = ckpt.get("dataset_config", {})
     openface_root = root or dc.get("openface_root", "OpenFace_features")
@@ -104,72 +100,6 @@ def evaluate_bilstm(
         for x, lengths, y in test_loader:
             x, lengths, y = x.to(device), lengths.to(device), y.to(device)
             logits = model(x, lengths)
-            total_loss += criterion(logits, y).item() * x.size(0)
-            preds = (torch.sigmoid(logits) >= 0.5).float()
-            total_correct += (preds == y).sum().item()
-            total += x.size(0)
-            all_preds.extend(preds.cpu().tolist())
-            all_labels.extend(y.cpu().tolist())
-
-    _print_metrics(total, total_loss / total, total_correct, all_preds, all_labels)
-
-
-def evaluate_multimodal(
-    ckpt: dict,
-    root: str | None,
-    opensmile_root: str | None,
-    device: torch.device,
-) -> None:
-    mc = ckpt["model_config"]
-    dc = ckpt["dataset_config"]
-    openface_root = root or dc["openface_root"]
-    audio_root = opensmile_root or dc["opensmile_root"]
-
-    test_ds = MultimodalDataset(
-        openface_root,
-        audio_root,
-        split="Test",
-        visual_key_fn=openface_ur_lying_key,
-        audio_key_fn=opensmile_ur_lying_key,
-        audio_subsample_k=dc["audio_subsample_k"],
-        visual_subsample_k=dc["visual_subsample_k"],
-        audio_motion_method=dc["audio_motion_method"],
-        audio_motion_low=dc["audio_motion_low"],
-        audio_motion_high=dc["audio_motion_high"],
-        visual_motion_method=dc["visual_motion_method"],
-        visual_motion_low=dc["visual_motion_low"],
-        visual_motion_high=dc["visual_motion_high"],
-    )
-    test_loader = DataLoader(
-        test_ds, batch_size=16, shuffle=False, collate_fn=_multimodal_collate
-    )
-
-    model = LateFusionBiGRUClassifier(
-        visual_d_in=mc["visual_d_in"],
-        audio_d_in=mc["audio_d_in"],
-        hidden=mc["hidden"],
-        num_layers=mc["num_layers"],
-        dropout=mc["dropout"],
-        pooling=mc["pooling"],
-        fusion_hidden=mc["fusion_hidden"],
-        use_visual=True,
-        use_audio=True,
-        use_text=False,
-    )
-    model.load_state_dict(ckpt["model_state_dict"])
-    model.to(device).eval()
-
-    criterion = torch.nn.BCEWithLogitsLoss()
-    total_loss, total_correct, total = 0.0, 0, 0
-    all_preds: list[float] = []
-    all_labels: list[float] = []
-
-    with torch.no_grad():
-        for visual_x, visual_len, audio_x, audio_len, y in test_loader:
-            visual_x, visual_len = visual_x.to(device), visual_len.to(device)
-            audio_x, audio_len = audio_x.to(device), audio_len.to(device)
-            y = y.to(device)
-            logits = model(visual_x, visual_len, audio_x, audio_len)
             total_loss += criterion(logits, y).item() * y.size(0)
             preds = (torch.sigmoid(logits) >= 0.5).float()
             total_correct += (preds == y).sum().item()
@@ -181,12 +111,12 @@ def evaluate_multimodal(
 
 
 def evaluate_avt(
-    ckpt: dict,
-    root: str | None,
-    opensmile_root: str | None,
-    whisper_root: str | None,
-    device: torch.device,
-) -> None:
+    ckpt,
+    root: Optional[str],
+    opensmile_root: Optional[str],
+    whisper_root: Optional[str],
+    device,
+):
     mc = ckpt["model_config"]
     dc = ckpt["dataset_config"]
 
@@ -311,7 +241,5 @@ if __name__ == "__main__":
 
     if model_type == "multimodal_avt":
         evaluate_avt(ckpt, args.root, args.opensmile_root, args.whisper_root, device)
-    elif model_type == "multimodal":
-        evaluate_multimodal(ckpt, args.root, args.opensmile_root, device)
     else:
         evaluate_bilstm(ckpt, args.root, device)

@@ -1,14 +1,11 @@
 from pathlib import Path
 from typing import List, Literal, Optional, Tuple
-
 import numpy as np
 import pandas as pd
 import torch
 from torch.utils.data import Dataset
 
-# ---------------------------------------------------------------------------
-# Feature column definitions (25 per-frame features — excludes time_start/time_end)
-# ---------------------------------------------------------------------------
+# ==== Feature column definitions ====
 
 AUDIO_FEATURE_COLS: List[str] = [
     # # Loudness / spectral
@@ -44,36 +41,22 @@ AUDIO_FEATURE_COLS: List[str] = [
 
 
 class OpenSmileDataset(Dataset):
-    """PyTorch Dataset for OpenSMILE audio feature CSVs.
-
-    Directory layout expected::
-
-        root_dir/
-          Train/
-            Truthful/   *.csv   → label 0
-            Deceptive/  *.csv   → label 1
-          Test/
-            Truthful/   *.csv   → label 0
-            Deceptive/  *.csv   → label 1
-
-    Each CSV has ``time_start`` / ``time_end`` columns followed by 25 per-frame
-    audio feature columns.  Each file contains one row per analysis frame
-    (10 ms hop), giving variable-length sequences across clips.
-
-    Each ``__getitem__`` returns ``(seq, label)`` where:
-      - ``seq``   : float32 tensor of shape ``(T, D)`` — T rows in the CSV
-      - ``label`` : int, 0 (Truthful) or 1 (Deceptive)
+    """
+    PyTorch Dataset for OpenSMILE audio feature CSVs.
+    Returns (seq, label):
+      - seq   : tensor of shape (T, D)
+      - label : 0 (Truthful) or 1 (Deceptive)
     """
 
     def __init__(
         self,
-        root_dir: str,
-        split: str = "Train",
+        root_dir,
+        split="Train",
         feature_cols: Optional[List[str]] = None,
-        subsample_k: int = 1,
+        subsample_k=1,
         motion_method: Literal["none", "feature_diff"] = "none",
-        motion_low: float = 0.0,
-        motion_high: float = float("inf"),
+        motion_low=0.0,
+        motion_high=float("inf"),
     ) -> None:
         self.feature_cols = feature_cols or AUDIO_FEATURE_COLS
         self.subsample_k = subsample_k
@@ -87,10 +70,10 @@ class OpenSmileDataset(Dataset):
             for csv_path in sorted((split_dir / label_name).glob("*.csv")):
                 self.samples.append((csv_path, label))
 
-    def __len__(self) -> int:
+    def __len__(self):
         return len(self.samples)
 
-    def _motion_mask(self, seq: torch.Tensor) -> np.ndarray:
+    def _motion_mask(self, seq):
         T = seq.shape[0]
         scores = np.zeros(T, dtype=np.float32)
         if self.motion_method == "feature_diff":
@@ -98,20 +81,20 @@ class OpenSmileDataset(Dataset):
             scores[1:] = diff
         return (scores >= self.motion_low) & (scores <= self.motion_high)
 
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, int]:
+    def __getitem__(self, idx):
         csv_path, label = self.samples[idx]
 
         df = pd.read_csv(csv_path)
         df.columns = df.columns.str.strip()
 
-        # Sanitize occasional malformed CSV cells before normalization.
+        # Sanitize malformed CSV cells
         features = df[self.feature_cols].apply(pd.to_numeric, errors="coerce")
         features = features.replace([np.inf, -np.inf], np.nan)
         features = features.ffill().bfill().fillna(0.0)
 
         seq = torch.tensor(features.values, dtype=torch.float32)
 
-        # Per-sample z-score normalization before motion filtering.
+        # Per-sample z-score normalization before motion filtering
         seq = (seq - seq.mean(dim=0, keepdim=True)) / seq.std(
             dim=0, keepdim=True, correction=0
         ).clamp_min(1e-6)

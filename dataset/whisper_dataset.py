@@ -1,42 +1,16 @@
-"""PyTorch Dataset for Whisper transcription files with RoBERTa token embeddings.
-
-Each sample's text is tokenized and encoded with a frozen RoBERTa model.
-Embeddings are cached in memory after the first forward pass.
-
-Directory layout expected::
-
-    {root_dir}/{split}/{Truthful,Deceptive}/*.txt
-
-Usage::
-
-    from dataset.whisper_dataset import WhisperDataset
-
-    ds = WhisperDataset("dataset/UR_LYING_Deception_Dataset/whisper_processed", split="Train")
-    token_embs, label = ds[0]   # token_embs: (T, 768), label: 0 or 1
-"""
-
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
-
+from typing import Any, Dict, List, Tuple
 import torch
 from torch.utils.data import Dataset
-from transformers import AutoModel, AutoTokenizer  # type: ignore[import-untyped]
+from transformers import AutoModel, AutoTokenizer
 
 ROBERTA_D_IN = 768  # roberta-base hidden size
 
 
 class WhisperDataset(Dataset):
-    """Dataset that reads Whisper ``.txt`` transcription files and returns
+    """
+    Dataset that reads Whisper ``.txt`` transcription files and returns
     per-token RoBERTa embeddings (last hidden state, special tokens stripped).
-
-    Args:
-        root_dir:   Root directory containing ``{split}/{Truthful,Deceptive}/`` sub-trees
-                    (e.g. ``whisper_processed/`` or ``whisper_raw/``).
-        split:      ``"Train"`` or ``"Test"``.
-        model_name: HuggingFace model identifier (default ``"roberta-base"``).
-        max_length: Maximum tokenizer sequence length including special tokens.
-        key_fn:     Optional function mapping a filename stem to a canonical key.
-                    Defaults to identity (stem is already the canonical key).
     """
 
     # Class-level tokenizer / model cache so multiple dataset instances
@@ -46,17 +20,15 @@ class WhisperDataset(Dataset):
 
     def __init__(
         self,
-        root_dir: str,
-        split: str = "Train",
-        model_name: str = "roberta-base",
-        max_length: int = 512,
-        key_fn: Optional[Callable[[str], str]] = None,
-    ) -> None:
+        root_dir,
+        split="Train",
+        model_name="roberta-base",
+        max_length=512,
+    ):
         self.root_dir = Path(root_dir)
         self.split = split
         self.model_name = model_name
         self.max_length = max_length
-        self._key_fn = key_fn or (lambda s: s)
 
         split_dir = self.root_dir / split
         if not split_dir.exists():
@@ -69,20 +41,14 @@ class WhisperDataset(Dataset):
                 for txt_path in sorted(label_dir.glob("*.txt")):
                     self.samples.append((txt_path, label))
 
-        # In-memory embedding cache: index → tensor (T, 768)
+        # In-memory embedding cache: index -> tensor (T, 768)
         self._cache: Dict[int, torch.Tensor] = {}
-
-    # ------------------------------------------------------------------
-    # Properties
-    # ------------------------------------------------------------------
 
     @property
     def d_in(self) -> int:
         return ROBERTA_D_IN
 
-    # ------------------------------------------------------------------
-    # Lazy tokenizer / model loading
-    # ------------------------------------------------------------------
+    # ==== Lazy tokenizer / model loading ====
 
     def _get_tokenizer(self) -> Any:
         if self.model_name not in WhisperDataset._tokenizer_cache:
@@ -98,9 +64,7 @@ class WhisperDataset(Dataset):
             WhisperDataset._model_cache[self.model_name] = model
         return WhisperDataset._model_cache[self.model_name]  # type: ignore[return-value]
 
-    # ------------------------------------------------------------------
-    # Dataset interface
-    # ------------------------------------------------------------------
+    # ==== Dataset interface ====
 
     def __len__(self) -> int:
         return len(self.samples)
@@ -125,7 +89,7 @@ class WhisperDataset(Dataset):
         with torch.no_grad():
             outputs = model(**inputs)
 
-        # last_hidden_state: (1, T, 768) — strip batch dim
+        # last_hidden_state: (1, T, 768): strip batch dim
         hidden: torch.Tensor = outputs.last_hidden_state.squeeze(0)  # (T, 768)
 
         # Strip leading <s> and trailing </s> special tokens
@@ -135,8 +99,3 @@ class WhisperDataset(Dataset):
         hidden = hidden.float().cpu()
         self._cache[idx] = hidden
         return hidden, label
-
-    def key_for(self, idx: int) -> str:
-        """Return the canonical key for sample ``idx``."""
-        stem = self.samples[idx][0].stem
-        return self._key_fn(stem)

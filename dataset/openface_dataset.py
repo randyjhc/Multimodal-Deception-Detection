@@ -8,7 +8,7 @@ from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader, Dataset, random_split
 
 # ---------------------------------------------------------------------------
-# Feature column definitions (48 features total)
+# Feature column definitions
 # ---------------------------------------------------------------------------
 
 GAZE_COLS: List[str] = [
@@ -71,7 +71,7 @@ AU_C_COLS: List[str] = [
     # "AU45_c",
 ]
 
-DEFAULT_FEATURE_COLS: List[str] = GAZE_COLS + POSE_COLS + AU_R_COLS + AU_C_COLS  # 48
+DEFAULT_FEATURE_COLS: List[str] = GAZE_COLS + POSE_COLS + AU_R_COLS + AU_C_COLS
 
 
 class OpenFaceDataset(Dataset):
@@ -215,10 +215,9 @@ def make_loaders(
         seed:           Random seed for the train/val split.
         feature_cols:   Override the default 48-column feature set.
         min_confidence: Minimum OpenFace confidence to keep a frame.
-        motion_method:  Frame scoring method: ``"none"`` (disabled),
-                        ``"feature_diff"`` (mean L1 over 48 feature cols), or
-                        ``"landmark_diff"`` (mean Euclidean 2D landmark
-                        displacement). Default ``"none"``.
+        motion_method:  Frame scoring method: ``"none"`` (disabled) or
+                        ``"feature_diff"`` (mean L1 over feature cols).
+                        Default ``"none"``.
         motion_low:     Keep frames with score >= motion_low. Default 0.0.
         motion_high:    Keep frames with score <= motion_high. Default inf.
 
