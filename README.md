@@ -73,6 +73,11 @@ The script auto-detects model type from the checkpoint and prints test loss, acc
 uv run --group dataset python open_face/au_stats.py --visualize
 ```
 
+```bash
+# Opensmile features' statistics and plots from OpenFace CSVs
+python analyze_opensmile.py --visualize
+```
+
 ## Project Structure
 
 ```
@@ -90,6 +95,8 @@ Multimodal-Deception-Detection/
 │   └── late_fusion_train.py    # Multimodal training loop
 ├── open_face/
 │   └── au_stats.py             # Action Unit statistics and visualization
+├── open_smile/
+|   └── opensmile_stats.py      # Opensmile feature statistics and visualization 
 ├── configs/                    # JSON configs for multimodal training
 ├── run_training.py             # Visual-only BiLSTM single run
 ├── run_cv_training.py          # Visual-only BiLSTM with 5-fold CV search
