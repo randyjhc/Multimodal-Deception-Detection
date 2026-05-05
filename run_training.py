@@ -1,10 +1,3 @@
-"""
-Entry point for training the BiLSTM deception classifier.
-
-Usage:
-    uv run python run_training.py
-"""
-
 import matplotlib
 
 matplotlib.use("Agg")
@@ -12,7 +5,7 @@ matplotlib.use("Agg")
 from typing import Literal
 
 from dataset.openface_dataset import make_loaders
-from model.train import run
+from model.vision_train import run
 
 # Config
 ROOT = "dataset/UR_LYING_Deception_Dataset/splits"

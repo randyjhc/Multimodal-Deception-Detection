@@ -8,13 +8,6 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 
 def collate_fn(batch):
-    """
-    batch: list of (seq(T_i, D), y)
-    returns:
-      x_padded: (B, T_max, D)
-      lengths: (B,)
-      y: (B,)
-    """
     seqs, ys = zip(*batch)
     lengths = torch.tensor([s.shape[0] for s in seqs], dtype=torch.long)
     x_padded = pad_sequence(seqs, batch_first=True)  # pad with 0

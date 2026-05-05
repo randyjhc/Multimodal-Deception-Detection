@@ -3,6 +3,7 @@
 Deception detection on the UR-LYING Dataset (private).
 
 Three modalities are supported individually or in combination:
+
 - **Visual**: facial action units and head pose from [OpenFace](https://github.com/TadasBaltrusaitis/OpenFace)
 - **Audio**: prosodic features (formants) from [OpenSMILE](https://github.com/audeering/opensmile)
 - **Text**: token-level embeddings from Whisper transcriptions via RoBERTa
@@ -48,7 +49,12 @@ python run_training_avt.py --config configs/config_vt   # V+T
 Each config is a JSON file specifying data roots, hyperparameters, and which modalities to activate (set a root to `null` to disable that modality). See [`configs/config_avt`](configs/config_avt) for a documented example.
 
 ### Visual or Audio Only
-(place holder)
+
+```bash
+python run_vision_training.py
+python run_audio_training.py
+
+```
 
 ## Inference / Evaluation
 
@@ -91,14 +97,17 @@ Multimodal-Deception-Detection/
 │   ├── BiLSTM.py               # Bidirectional LSTM classifier
 │   ├── BiGRU.py                # Bidirectional GRU classifier
 │   ├── LateFusionBiGRU.py      # Late-fusion multimodal architecture
-│   ├── train.py                # Single-modality training loop
+│   ├── vision_train.py         # Single vision modality training loop
+│   ├── audio_train.py          # Single audio modality training loop
 │   └── late_fusion_train.py    # Multimodal training loop
 ├── open_face/
 │   └── au_stats.py             # Action Unit statistics and visualization
 ├── open_smile/
-|   └── opensmile_stats.py      # Opensmile feature statistics and visualization 
+|   └── opensmile_stats.py      # Opensmile feature statistics and visualization
 ├── configs/                    # JSON configs for multimodal training
 ├── run_training.py             # Visual-only BiLSTM single run
+├── run_vision_training.py      # Visual-only BiLSTM and BiGRU
+├── run_audio_training.py       # Audio-only BiLSTM and BiGRU
 ├── run_cv_training.py          # Visual-only BiLSTM with 5-fold CV search
 ├── run_training_avt.py         # Multimodal training
 └── test_model.py               # Evaluation for a saved checkpoint

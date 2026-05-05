@@ -1,15 +1,3 @@
-"""
-CV hyperparameter search + final model training + test evaluation.
-
-Steps:
-  1. Grid search over (hidden, dropout, lr) using 5-fold stratified CV on Train/
-  2. Train a final model on all 109 Train/ samples with the best hyperparameters
-  3. Evaluate once on the 12-sample Test/ set
-
-Usage:
-    uv run python run_cv_training.py
-"""
-
 import matplotlib
 
 matplotlib.use("Agg")
@@ -25,7 +13,7 @@ from sklearn.model_selection import StratifiedKFold
 from torch.utils.data import DataLoader, Subset
 
 from dataset.openface_dataset import OpenFaceDataset, _collate, DEFAULT_FEATURE_COLS
-from model.train import run, train_one_epoch
+from model.vision_train import run, train_one_epoch
 from model.BiLSTM import BiLSTMClassifier
 
 
@@ -49,7 +37,6 @@ class CVResult(TypedDict):
     avg_best_epoch: int
 
 
-# ── Config ────────────────────────────────────────────────────────────────────
 ROOT = "dataset/UR_LYING_Deception_Dataset/splits"
 K = 5
 BATCH_SIZE = 16
@@ -59,14 +46,12 @@ DEVICE = "cuda"
 SUBSAMPLE_K = 5
 SCHEDULER = "cosine"
 D_IN = len(DEFAULT_FEATURE_COLS)  # 48
-# (motion_method, motion_low, motion_high)
 # feature_diff scores: mean L1 over 48 features (AU intensities 0-5, gaze/pose similar scale)
 MOTION_COMBOS: list[tuple[Literal["none", "feature_diff"], float, float]] = [
     ("feature_diff", 0.2, 2.0),  # remove near-static + extreme-noise frames
     ("feature_diff", 0.2, 0.8),  # tighter upper bound
 ]
 
-# Hyperparameter grid — motion combo (3 combos × 5 folds = 15 runs)
 PARAM_GRID: list[HParams] = [
     {
         "hidden": 64,
@@ -79,9 +64,6 @@ PARAM_GRID: list[HParams] = [
     for mm, ml, mh in MOTION_COMBOS
 ]
 
-# ── Datasets ──────────────────────────────────────────────────────────────────
-# Base dataset (no motion filtering) to extract labels and compute CV splits.
-# Indices remain consistent across all combos since file order is fixed.
 _base_ds = OpenFaceDataset(ROOT, split="Train", subsample_k=SUBSAMPLE_K)
 labels = [lbl for _, lbl in _base_ds.samples]
 
@@ -90,7 +72,6 @@ print(
 )
 print(f"Grid: {len(PARAM_GRID)} combos × {K} folds = {len(PARAM_GRID) * K} runs\n")
 
-# ── CV hyperparameter search ──────────────────────────────────────────────────
 skf = StratifiedKFold(n_splits=K, shuffle=True, random_state=42)
 splits = list(skf.split(np.arange(len(_base_ds)), labels))
 
@@ -164,7 +145,6 @@ for i, params in enumerate(PARAM_GRID):
         f"  →  mean_val_acc={mean_acc:.4f}  avg_best_epoch={avg_epoch}"
     )
 
-# ── Select best hyperparameters ───────────────────────────────────────────────
 best = max(results, key=lambda r: r["mean_val_acc"])
 
 print(f"\n{'='*55}")
@@ -176,10 +156,8 @@ print(f"  CV mean val acc : {best['mean_val_acc']:.4f}")
 print(f"  Avg best epoch  : {best['avg_best_epoch']}")
 print(f"{'='*55}\n")
 
-# ── Final training on all 109 samples ─────────────────────────────────────────
 print("Training final model on all 109 training samples...")
 
-# Recreate datasets using the best motion thresholds found during CV.
 full_train_ds = OpenFaceDataset(
     ROOT,
     split="Train",
@@ -238,7 +216,6 @@ torch.save(
 )
 print("Saved → best_bilstm_final.pt\n")
 
-# ── Test evaluation ───────────────────────────────────────────────────────────
 print(f"{'='*55}")
 print("Evaluating on test set...")
 print(f"{'='*55}")
