@@ -14,7 +14,7 @@ np.random.seed(SEED)
 torch.manual_seed(SEED)
 
 from dataset.opensmile_frame_dataset import make_frame_loaders
-from model.frame_train import run
+from model.audio_train import run
 
 
 ROOT       = "dataset/UR_LYING_Deception_Dataset/opensmile_raw"

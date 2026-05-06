@@ -13,7 +13,7 @@ np.random.seed(SEED)
 torch.manual_seed(SEED)
 
 from dataset.openface_dataset import make_loaders
-from model.frame_train import run
+from model.vision_train import run
 
 ROOT       = "dataset/UR_LYING_Deception_Dataset/openface_raw"
 BATCH_SIZE = 16
